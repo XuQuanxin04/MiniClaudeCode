@@ -34,15 +34,21 @@ env/
 *.swo
 *~
 
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
 # OS
 .DS_Store
 Thumbs.db
 
-# Project specific
-.pytest_cache/
-.coverage
-htmlcov/
+# Logs
 *.log
+
+# Temporary files
+*.tmp
+*.bak
 
 # MiniCode specific
 .mini-code/
