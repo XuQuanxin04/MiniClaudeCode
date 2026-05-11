@@ -1,4 +1,4 @@
-﻿"""Smart Routing Engine - combines router, switcher, and feedback learning.
+"""Smart Routing Engine - combines router, switcher, and feedback learning.
 
 Central orchestration layer that:
 1. Routes each task to optimal model via AgentRouter
@@ -9,6 +9,7 @@ Central orchestration layer that:
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,16 +38,26 @@ class TaskOutcome:
 
 
 class FeedbackLearner:
-    """Learns from task outcomes to improve routing decisions."""
+    """Learns from task outcomes to improve routing decisions.
+    
+    Uses batched async writes to avoid disk I/O on every outcome.
+    """
 
     def __init__(self, storage_path: Path | None = None):
         self._storage = storage_path
         self._outcomes: list[TaskOutcome] = []
         self._model_performance: dict[str, dict[str, float]] = {}
+        self._dirty = False
+        self._save_lock = threading.Lock()
+        self._batch_size = 10  # Save every N outcomes
         self._load()
 
     def record_outcome(self, outcome: TaskOutcome) -> None:
-        """Record a task outcome for learning."""
+        """Record a task outcome for learning.
+        
+        Updates are batched: disk write only occurs every _batch_size records
+        or when explicitly flushed.
+        """
         self._outcomes.append(outcome)
         
         model = outcome.assigned_model
@@ -67,7 +78,15 @@ class FeedbackLearner:
         perf["total_duration_ms"] += outcome.duration_ms
         perf["total_errors"] += outcome.tool_errors
         
-        self._save()
+        self._dirty = True
+        # Batch save: only write to disk every N outcomes
+        if len(self._outcomes) % self._batch_size == 0:
+            self._save()
+
+    def flush(self) -> None:
+        """Force immediate save of pending outcomes."""
+        if self._dirty:
+            self._save()
 
     def get_model_score(self, model: str) -> float:
         """Get performance score for a model (0-1)."""
@@ -141,31 +160,40 @@ class FeedbackLearner:
         return report
 
     def _save(self) -> None:
-        """Persist outcomes to disk."""
+        """Persist outcomes to disk (thread-safe, atomic write)."""
         if not self._storage:
             return
-        try:
-            data = {
-                "outcomes": [
-                    {
-                        "task_text": o.task_text[:200],
-                        "assigned_model": o.assigned_model,
-                        "success": o.success,
-                        "duration_ms": o.duration_ms,
-                        "cost_usd": o.cost_usd,
-                        "tool_errors": o.tool_errors,
-                        "model_switches": o.model_switches,
-                        "timestamp": o.timestamp,
-                        "user_satisfaction": o.user_satisfaction,
-                    }
-                    for o in self._outcomes
-                ],
-                "model_performance": self._model_performance,
-            }
-            self._storage.parent.mkdir(parents=True, exist_ok=True)
-            self._storage.write_text(json.dumps(data, indent=2))
-        except Exception as e:
-            logger.warning("Failed to save feedback data: %s", e)
+        with self._save_lock:
+            if not self._dirty:
+                return
+            try:
+                data = {
+                    "outcomes": [
+                        {
+                            "task_text": o.task_text[:200],
+                            "assigned_model": o.assigned_model,
+                            "success": o.success,
+                            "duration_ms": o.duration_ms,
+                            "cost_usd": o.cost_usd,
+                            "tool_errors": o.tool_errors,
+                            "model_switches": o.model_switches,
+                            "timestamp": o.timestamp,
+                            "user_satisfaction": o.user_satisfaction,
+                        }
+                        for o in self._outcomes
+                    ],
+                    "model_performance": self._model_performance,
+                }
+                self._storage.parent.mkdir(parents=True, exist_ok=True)
+                # Atomic write: tmp file then replace
+                tmp_path = self._storage.with_suffix(".tmp")
+                tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                import os
+                os.replace(str(tmp_path), str(self._storage))
+                self._dirty = False
+                logger.debug("Saved %d outcomes to %s", len(self._outcomes), self._storage)
+            except Exception as e:
+                logger.warning("Failed to save feedback data: %s", e)
 
     def _load(self) -> None:
         """Load outcomes from disk."""

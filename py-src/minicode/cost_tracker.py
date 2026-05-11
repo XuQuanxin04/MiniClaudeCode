@@ -6,6 +6,7 @@ Inspired by Claude Code's cost-tracker.ts implementation.
 
 from __future__ import annotations
 
+import functools
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
@@ -155,6 +156,12 @@ MODEL_PRICING = {
 }
 
 
+@functools.lru_cache(maxsize=128)
+def _get_pricing(model: str) -> dict[str, float]:
+    """Cached pricing lookup to avoid repeated dict.get() calls."""
+    return MODEL_PRICING.get(model, MODEL_PRICING["default"])
+
+
 # ---------------------------------------------------------------------------
 # Cost calculation (standalone function for use outside CostTracker)
 # ---------------------------------------------------------------------------
@@ -178,7 +185,7 @@ def calculate_cost(
     Returns:
         Cost in USD
     """
-    pricing = MODEL_PRICING.get(model, MODEL_PRICING["default"])
+    pricing = _get_pricing(model)
     return (
         (input_tokens / 1_000_000) * pricing["input"]
         + (output_tokens / 1_000_000) * pricing["output"]
@@ -200,25 +207,18 @@ class ModelUsage:
     cache_write_tokens: int = 0
     cost_usd: float = 0.0
     call_count: int = 0
-    error_count: int = 0
     total_duration_ms: int = 0
+    error_count: int = 0
     
-    @property
-    def total_tokens(self) -> int:
-        """Total tokens used."""
-        return (
-            self.input_tokens
-            + self.output_tokens
-            + self.cache_read_tokens
-            + self.cache_write_tokens
-        )
-    
-    @property
     def avg_duration_ms(self) -> float:
-        """Average API call duration."""
+        """Average duration per call."""
         if self.call_count == 0:
             return 0.0
         return self.total_duration_ms / self.call_count
+    
+    def total_tokens(self) -> int:
+        """Total tokens (input + output)."""
+        return self.input_tokens + self.output_tokens
 
 
 @dataclass
@@ -263,8 +263,8 @@ class CostTracker:
         Returns:
             Calculated cost in USD
         """
-        # Get pricing
-        pricing = MODEL_PRICING.get(model, MODEL_PRICING["default"])
+        # Get pricing (cached for repeated lookups)
+        pricing = _get_pricing(model)
         
         # Calculate cost
         cost = (
@@ -302,55 +302,43 @@ class CostTracker:
         """
         if model not in self.model_usage:
             self.model_usage[model] = ModelUsage()
-        
         self.model_usage[model].error_count += 1
-        self.last_updated = time.time()
     
     def record_code_changes(
         self,
         lines_added: int = 0,
         lines_removed: int = 0,
+        lines_modified: int = 0,
     ) -> None:
-        """Record code changes.
+        """Record code changes from edits.
         
         Args:
             lines_added: Lines added
             lines_removed: Lines removed
+            lines_modified: Lines modified
         """
         self.total_lines_added += lines_added
         self.total_lines_removed += lines_removed
-        self.total_lines_modified += lines_added + lines_removed
-        self.last_updated = time.time()
+        self.total_lines_modified += lines_modified
     
     def get_model_usage(self, model: str) -> ModelUsage:
-        """Get usage for a specific model.
-        
-        Args:
-            model: Model name
-        
-        Returns:
-            ModelUsage instance
-        """
+        """Get usage for a specific model."""
         return self.model_usage.get(model, ModelUsage())
     
     def get_total_tokens(self) -> int:
         """Get total tokens across all models."""
-        return sum(u.total_tokens for u in self.model_usage.values())
+        return sum(u.total_tokens() for u in self.model_usage.values())
     
     def get_total_calls(self) -> int:
         """Get total API calls."""
         return sum(u.call_count for u in self.model_usage.values())
     
     def get_total_errors(self) -> int:
-        """Get total API errors."""
+        """Get total errors."""
         return sum(u.error_count for u in self.model_usage.values())
     
-    # -----------------------------------------------------------------------
-    # Formatting
-    # -----------------------------------------------------------------------
-    
     def format_cost_report(self, detailed: bool = False) -> str:
-        """Format cost and usage report.
+        """Format a human-readable cost report.
         
         Args:
             detailed: Include per-model breakdown
@@ -359,66 +347,32 @@ class CostTracker:
             Formatted report string
         """
         lines = [
-            "Cost & Usage Report",
-            "=" * 60,
-            "",
-            "Summary:",
-            f"  Total cost: ${self.total_cost_usd:.4f}",
-            f"  Total API calls: {self.get_total_calls()}",
-            f"  Total API errors: {self.get_total_errors()}",
-            f"  Total tokens: {self.get_total_tokens():,}",
-            f"  Total API duration: {self.total_api_duration_ms / 1000:.1f}s",
-            "",
-            "Code Changes:",
-            f"  Lines added: {self.total_lines_added:,}",
-            f"  Lines removed: {self.total_lines_removed:,}",
-            f"  Total modified: {self.total_lines_modified:,}",
+            "Cost Report",
+            "===========",
+            f"Total cost: ${self.total_cost_usd:.4f}",
+            f"Total tokens: {self.get_total_tokens():,}",
+            f"Total calls: {self.get_total_calls()}",
+            f"Total errors: {self.get_total_errors()}",
+            f"Session duration: {int(time.time() - self.session_start)}s",
         ]
         
         if detailed and self.model_usage:
-            lines.extend([
-                "",
-                "Per-Model Breakdown:",
-                "-" * 60,
-            ])
-            
-            for model, usage in self.model_usage.items():
-                lines.extend([
-                    "",
-                    f"  {model}:",
-                    f"    Cost: ${usage.cost_usd:.4f}",
-                    f"    Calls: {usage.call_count}",
-                    f"    Errors: {usage.error_count}",
-                    f"    Tokens: {usage.total_tokens:,}",
-                    f"      Input: {usage.input_tokens:,}",
-                    f"      Output: {usage.output_tokens:,}",
-                    f"      Cache read: {usage.cache_read_tokens:,}",
-                    f"      Cache write: {usage.cache_write_tokens:,}",
-                    f"    Avg duration: {usage.avg_duration_ms:.0f}ms",
-                ])
-        
-        # Session duration
-        session_duration = time.time() - self.session_start
-        lines.extend([
-            "",
-            "-" * 60,
-            f"Session duration: {session_duration / 60:.1f} minutes",
-            f"Cost per minute: ${self.total_cost_usd / max(1, session_duration / 60):.4f}",
-        ])
+            lines.append("")
+            lines.append("Per-model breakdown:")
+            for model, usage in sorted(self.model_usage.items()):
+                lines.append(
+                    f"  {model}: ${usage.cost_usd:.4f} ({usage.total_tokens():,} tokens, "
+                    f"{usage.call_count} calls, {usage.error_count} errors)"
+                )
         
         return "\n".join(lines)
     
     def format_short_summary(self) -> str:
-        """Format a short summary for status bar.
+        """Format a one-line summary.
         
         Returns:
             Short summary string
         """
-        if self.total_cost_usd == 0:
-            return "Cost: $0.0000"
-        
-        return (
-            f"Cost: ${self.total_cost_usd:.4f} | "
-            f"Tokens: {self.get_total_tokens():,} | "
-            f"Calls: {self.get_total_calls()}"
-        )
+        total = self.get_total_tokens()
+        calls = self.get_total_calls()
+        return f"${self.total_cost_usd:.4f} | {total:,} tokens | {calls} calls"

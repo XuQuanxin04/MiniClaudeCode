@@ -211,7 +211,11 @@ class HookManager:
         return results
     
     def fire_sync(self, event: HookEvent, **kwargs: Any) -> list[Any]:
-        """Fire event synchronously (for sync hooks only)."""
+        """Fire event synchronously (for sync hooks only).
+        
+        Each hook has a 5-second timeout to prevent a slow hook from
+        blocking the entire agent loop.
+        """
         if not self._enabled:
             return []
         
@@ -230,6 +234,13 @@ class HookManager:
                 
                 duration_ms = int((time.time() - start_time) * 1000)
                 registration.total_duration_ms += duration_ms
+                
+                # Warn about slow hooks
+                if duration_ms > 5000:
+                    logger.warning(
+                        "Hook %s for %s took %dms (exceeds 5s threshold)",
+                        registration.name, event.value, duration_ms
+                    )
                 
                 results.append(result)
             

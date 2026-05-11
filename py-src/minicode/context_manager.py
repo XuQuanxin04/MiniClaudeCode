@@ -266,6 +266,8 @@ class ContextManager:
         self._total_tokens: int | None = None
         self._last_compaction_time: float = 0
         self._working_memory = working_memory or get_working_memory()
+        # Index for fast message lookup by role
+        self._role_index: dict[str, list[int]] = {}
     
     def get_stats(self) -> ContextStats:
         """Get context statistics with incremental counting."""
@@ -292,11 +294,28 @@ class ContextManager:
         """Reset incremental token count (forces recalculation)."""
         self._total_tokens = None
     
+    def _rebuild_role_index(self) -> None:
+        """Rebuild the role-to-indices index."""
+        self._role_index = {}
+        for i, msg in enumerate(self.messages):
+            role = msg.get("role", "unknown")
+            self._role_index.setdefault(role, []).append(i)
+    
+    def find_messages_by_role(self, role: str) -> list[dict[str, Any]]:
+        """Fast lookup of messages by role using index."""
+        if not self._role_index:
+            self._rebuild_role_index()
+        indices = self._role_index.get(role, [])
+        return [self.messages[i] for i in indices if i < len(self.messages)]
+    
     def add_message(self, message: dict[str, Any]) -> None:
         """Add a message with incremental token tracking."""
         tokens = estimate_message_tokens(message)
         self.messages.append(message)
         self._update_token_count(tokens)
+        # Update index
+        role = message.get("role", "unknown")
+        self._role_index.setdefault(role, []).append(len(self.messages) - 1)
     
     def remove_message(self, index: int) -> int:
         """Remove a message and return token delta."""
@@ -304,6 +323,8 @@ class ContextManager:
             tokens = estimate_message_tokens(self.messages[index])
             del self.messages[index]
             self._update_token_count(-tokens)
+            # Invalidate index since indices shifted
+            self._role_index = {}
             return tokens
         return 0
     

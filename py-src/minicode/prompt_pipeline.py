@@ -13,6 +13,7 @@ Key concepts:
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import time
 from dataclasses import dataclass, field
@@ -71,11 +72,17 @@ class PromptPipeline:
         self._dynamic_sections: list[PromptSection] = []
 
     def register_static(self, name: str, text: str) -> None:
-        """Register a paragraph that never changes (fully cacheable)."""
+        """Register a paragraph that never changes (fully cacheable).
+        
+        Uses @lru_cache on the builder to avoid any re-evaluation overhead.
+        """
+        @functools.lru_cache(maxsize=1)
+        def _cached_builder() -> str:
+            return text
         self._static_sections.append(
             PromptSection(
                 name=name,
-                builder=lambda: text,
+                builder=_cached_builder,
                 cache_ttl=float("inf"),  # Never expires
             )
         )

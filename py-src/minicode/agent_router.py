@@ -12,6 +12,7 @@ Routing strategies:
 
 from __future__ import annotations
 
+import functools
 import re
 import time
 from dataclasses import dataclass, field
@@ -94,8 +95,12 @@ _DANGEROUS_KEYWORDS = {
 }
 
 
+@functools.lru_cache(maxsize=256)
 def _classify_complexity(text: str) -> TaskComplexity:
-    """Classify task complexity based on keywords and length."""
+    """Classify task complexity based on keywords and length.
+    
+    Result is cached to avoid re-analyzing the same or similar tasks.
+    """
     text_lower = text.lower()
     
     # Check for critical keywords first

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
 import hashlib
@@ -8,6 +9,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Protocol
 from abc import abstractmethod
+
+logger = logging.getLogger("minicode.tooling")
 
 
 # ---------------------------------------------------------------------------
@@ -395,8 +398,17 @@ class ToolRegistry:
                            f"Input was: {str(input_data)[:200]}"
                 )
             
-            # Phase 2: Execution (with crash protection)
+            # Phase 2: Execution (with crash protection and timing)
+            exec_start = time.time()
             result = tool.run(parsed, context)
+            exec_duration_ms = int((time.time() - exec_start) * 1000)
+            
+            # Warn about slow tools
+            if exec_duration_ms > 10000:
+                logger.warning(
+                    "Slow tool execution: %s took %dms (input: %s)",
+                    tool_name, exec_duration_ms, str(input_data)[:100]
+                )
             
             # Phase 3: Output sanitization
             if result.output is None:

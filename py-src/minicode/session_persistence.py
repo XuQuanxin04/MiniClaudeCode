@@ -6,6 +6,7 @@ and on shutdown, allowing recovery after crashes.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import time
@@ -101,14 +102,18 @@ class SessionPersistence:
 
         path = self._session_path()
         try:
-            tmp_path = path.with_suffix(".tmp")
-            tmp_path.write_text(
-                json.dumps(state.to_dict(), indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            os.replace(str(tmp_path), str(path))
+            data = json.dumps(state.to_dict(), indent=2, ensure_ascii=False)
+            # Compress session data to reduce disk usage (~70% reduction for typical sessions)
+            compressed = gzip.compress(data.encode("utf-8"), compresslevel=6)
+            tmp_path = path.with_suffix(".json.gz.tmp")
+            tmp_path.write_bytes(compressed)
+            final_path = path.with_suffix(".json.gz")
+            os.replace(str(tmp_path), str(final_path))
             self._last_save = now
-            logger.debug("Session saved: %s (%d messages)", self.session_id, len(messages))
+            logger.debug(
+                "Session saved: %s (%d messages, %d -> %d bytes compressed)",
+                self.session_id, len(messages), len(data), len(compressed)
+            )
             self._cleanup_old_sessions()
             return True
         except Exception as e:
@@ -116,13 +121,26 @@ class SessionPersistence:
             return False
 
     def load(self) -> SessionState | None:
-        """Load session state from disk."""
-        path = self._session_path()
-        if not path.exists():
+        """Load session state from disk (supports both plain and compressed)."""
+        # Try compressed first
+        gz_path = self._session_path().with_suffix(".json.gz")
+        plain_path = self._session_path().with_suffix(".json")
+        
+        path = None
+        is_compressed = False
+        if gz_path.exists():
+            path = gz_path
+            is_compressed = True
+        elif plain_path.exists():
+            path = plain_path
+        else:
             return None
 
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            if is_compressed:
+                data = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+            else:
+                data = json.loads(path.read_text(encoding="utf-8"))
             state = SessionState.from_dict(data)
             age_hours = (time.time() - state.timestamp) / 3600
             if age_hours > 24:
@@ -138,9 +156,13 @@ class SessionPersistence:
 
     def delete(self) -> bool:
         """Delete saved session."""
-        path = self._session_path()
-        if path.exists():
-            path.unlink()
+        deleted = False
+        for ext in [".json", ".json.gz"]:
+            path = self._session_path().with_suffix(ext)
+            if path.exists():
+                path.unlink()
+                deleted = True
+        if deleted:
             logger.info("Session deleted: %s", self.session_id)
             return True
         return False
@@ -148,7 +170,7 @@ class SessionPersistence:
     def _cleanup_old_sessions(self) -> None:
         """Remove oldest sessions if exceeding max_sessions."""
         sessions = sorted(
-            self._sessions_dir.glob("*.json"),
+            list(self._sessions_dir.glob("*.json")) + list(self._sessions_dir.glob("*.json.gz")),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -159,9 +181,13 @@ class SessionPersistence:
     def list_sessions(self) -> list[dict[str, Any]]:
         """List all available sessions."""
         sessions = []
-        for path in sorted(self._sessions_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        all_paths = list(self._sessions_dir.glob("*.json")) + list(self._sessions_dir.glob("*.json.gz"))
+        for path in sorted(all_paths, key=lambda p: p.stat().st_mtime, reverse=True):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                if path.suffix == ".gz":
+                    data = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+                else:
+                    data = json.loads(path.read_text(encoding="utf-8"))
                 age_hours = (time.time() - data.get("timestamp", 0)) / 3600
                 sessions.append({
                     "session_id": data.get("session_id", path.stem),

@@ -9,6 +9,7 @@ Provides a simple, predictable state container with:
 from __future__ import annotations
 
 import time
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generic, TypeVar
 
@@ -38,7 +39,8 @@ class Store(Generic[T]):
             on_change: Optional callback invoked on state changes
         """
         self._state = initial_state
-        self._listeners: list[Callable[[], None]] = []
+        # Use WeakSet to avoid memory leaks from forgotten unsubscribes
+        self._listeners = weakref.WeakSet()
         self._on_change = on_change
         self._update_count = 0
     
@@ -66,8 +68,8 @@ class Store(Generic[T]):
         self._state = next_state
         self._update_count += 1
         
-        # Notify subscribers
-        for listener in self._listeners:
+        # Notify subscribers (WeakSet iteration is safe against concurrent modification)
+        for listener in list(self._listeners):
             try:
                 listener()
             except Exception:
@@ -77,17 +79,19 @@ class Store(Generic[T]):
     def subscribe(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Subscribe to state changes.
         
+        Uses WeakSet to prevent memory leaks when listeners are
+        not explicitly unsubscribed.
+        
         Args:
             listener: Callback invoked on state changes
         
         Returns:
             Unsubscribe function
         """
-        self._listeners.append(listener)
+        self._listeners.add(listener)
         
         def unsubscribe():
-            if listener in self._listeners:
-                self._listeners.remove(listener)
+            self._listeners.discard(listener)
         
         return unsubscribe
     
