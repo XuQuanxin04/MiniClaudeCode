@@ -331,6 +331,9 @@ class TeamRegistry:
     # --- Status ---
     def get_team_status(self) -> dict[str, Any]:
         """Get overall team status."""
+        task_counts: dict[str, int] = {}
+        for t in self._tasks.values():
+            task_counts[t.status] = task_counts.get(t.status, 0) + 1
         return {
             "agents": {
                 aid: {
@@ -342,10 +345,10 @@ class TeamRegistry:
                 for aid, a in self._agents.items()
             },
             "tasks": {
-                "open": sum(1 for t in self._tasks.values() if t.status == "open"),
-                "claimed": sum(1 for t in self._tasks.values() if t.status == "claimed"),
-                "completed": sum(1 for t in self._tasks.values() if t.status == "completed"),
-                "failed": sum(1 for t in self._tasks.values() if t.status == "failed"),
+                "open": task_counts.get("open", 0),
+                "claimed": task_counts.get("claimed", 0),
+                "completed": task_counts.get("completed", 0),
+                "failed": task_counts.get("failed", 0),
             },
         }
 
@@ -364,14 +367,11 @@ class TeamRegistry:
 
         if status["agents"]:
             lines.append("Agents:")
-            for aid, info in status["agents"].items():
-                task_info = ""
-                if info["current_task"]:
-                    task_info = f" (task: {info['current_task'][:8]})"
-                lines.append(
-                    f"  • [{info['status']}] {info['name']} "
-                    f"({info['role']}){task_info}"
-                )
+            lines.extend(
+                f"  • [{info['status']}] {info['name']} ({info['role']})"
+                + (f" (task: {info['current_task'][:8]})" if info["current_task"] else "")
+                for info in status["agents"].values()
+            )
 
         return "\n".join(lines)
 

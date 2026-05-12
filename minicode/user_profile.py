@@ -272,32 +272,26 @@ class UserProfileManager:
         parts: list[str] = ["## User Profile", ""]
 
         p = profile.preferences
-        prefs = []
-        if p.language:
-            prefs.append(f"Language: {p.language}")
-        if p.verbosity:
-            prefs.append(f"Verbosity: {p.verbosity}")
-        if p.response_style:
-            prefs.append(f"Response style: {p.response_style}")
-        if p.preferred_framework:
-            prefs.append(f"Preferred framework: {p.preferred_framework}")
-        if p.preferred_test_framework:
-            prefs.append(f"Preferred test framework: {p.preferred_test_framework}")
-        if p.auto_format:
-            prefs.append("Auto-format on edit: yes")
+        prefs = [
+            f"Language: {p.language}" if p.language else "",
+            f"Verbosity: {p.verbosity}" if p.verbosity else "",
+            f"Response style: {p.response_style}" if p.response_style else "",
+            f"Preferred framework: {p.preferred_framework}" if p.preferred_framework else "",
+            f"Preferred test framework: {p.preferred_test_framework}" if p.preferred_test_framework else "",
+            "Auto-format on edit: yes" if p.auto_format else "",
+        ]
+        prefs = [x for x in prefs if x]
         if prefs:
             parts.append("Preferences: " + ", ".join(prefs))
 
         cs = profile.coding_style
-        style = []
-        if cs.indent_style:
-            style.append(f"indent: {cs.indent_style}" + (f" ({cs.indent_size})" if cs.indent_size else ""))
-        if cs.quote_style:
-            style.append(f"quotes: {cs.quote_style}")
-        if cs.naming_convention:
-            style.append(f"naming: {cs.naming_convention}")
-        if cs.max_line_length:
-            style.append(f"max line: {cs.max_line_length}")
+        style = [
+            f"indent: {cs.indent_style}" + (f" ({cs.indent_size})" if cs.indent_size else "") if cs.indent_style else "",
+            f"quotes: {cs.quote_style}" if cs.quote_style else "",
+            f"naming: {cs.naming_convention}" if cs.naming_convention else "",
+            f"max line: {cs.max_line_length}" if cs.max_line_length else "",
+        ]
+        style = [x for x in style if x]
         if style:
             parts.append("Coding style: " + ", ".join(style))
 

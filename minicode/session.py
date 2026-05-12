@@ -17,6 +17,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -96,12 +97,13 @@ class SessionData:
                 self.metadata.first_message = content[:100]
                 break
 
-        # Extract last message (truncated)
-        for msg in reversed(self.messages):
-            if msg.get("role") in ("user", "assistant"):
-                content = msg.get("content", "")
-                self.metadata.last_message = content[:100]
-                break
+        # Extract last message (truncated) — avoid full reverse iteration
+        if self.messages:
+            for msg in reversed(self.messages):
+                if msg.get("role") in ("user", "assistant"):
+                    content = msg.get("content", "")
+                    self.metadata.last_message = content[:100]
+                    break
     
     @property
     def has_delta(self) -> bool:
@@ -513,6 +515,11 @@ class AutosaveManager:
 # Session formatting for display
 # ---------------------------------------------------------------------------
 
+def _fmt_ts(ts: float, fmt: str) -> str:
+    """Fast timestamp formatting using datetime (avoids repeated localtime)."""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(fmt)
+
+
 def format_session_list(sessions: list[SessionMetadata]) -> str:
     """Format sessions as a human-readable list."""
     if not sessions:
@@ -520,10 +527,7 @@ def format_session_list(sessions: list[SessionMetadata]) -> str:
 
     lines = ["Saved sessions:", ""]
     for i, meta in enumerate(sessions, 1):
-        created = time.strftime(
-            "%Y-%m-%d %H:%M",
-            time.localtime(meta.created_at),
-        )
+        created = _fmt_ts(meta.created_at, "%Y-%m-%d %H:%M")
         workspace = meta.workspace or "unknown"
         first_msg = meta.first_message or "(empty)"
         count = meta.message_count
@@ -540,14 +544,8 @@ def format_session_list(sessions: list[SessionMetadata]) -> str:
 
 def format_session_resume(session: SessionData) -> str:
     """Format session info for resume confirmation."""
-    created = time.strftime(
-        "%Y-%m-%d %H:%M:%S",
-        time.localtime(session.created_at),
-    )
-    updated = time.strftime(
-        "%Y-%m-%d %H:%M:%S",
-        time.localtime(session.updated_at),
-    )
+    created = _fmt_ts(session.created_at, "%Y-%m-%d %H:%M:%S")
+    updated = _fmt_ts(session.updated_at, "%Y-%m-%d %H:%M:%S")
     return (
         f"Resuming session {session.session_id[:8]}\n"
         f"  Created: {created}\n"

@@ -54,16 +54,17 @@ class AgentContext:
 
     def get_recent_messages(self, limit: int = 20) -> list[ChatMessage]:
         """Get recent messages within token limit."""
-        result = []
         total_tokens = 0
+        selected: list[ChatMessage] = []
         for msg in reversed(self.messages):
             content = msg.get("content", "")
             msg_tokens = len(content) // 4  # Rough estimate
             if total_tokens + msg_tokens > self.max_tokens:
                 break
-            result.insert(0, msg)
+            selected.append(msg)
             total_tokens += msg_tokens
-        return result
+        selected.reverse()
+        return selected
 
     def get_context_summary(self) -> dict[str, Any]:
         """Get a summary of the agent's context."""

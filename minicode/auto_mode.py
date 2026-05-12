@@ -15,6 +15,7 @@ Permission modes:
 
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -51,12 +52,12 @@ class RiskLevel(str, Enum):
 # ---------------------------------------------------------------------------
 
 # Safe tools (auto-approve in auto mode)
-SAFE_TOOLS = {
+SAFE_TOOLS = frozenset({
     "read_file",
     "list_files",
     "grep_files",
     "load_skill",
-}
+})
 
 # Low-risk tools (auto-approve with logging)
 LOW_RISK_TOOLS = {
@@ -64,12 +65,12 @@ LOW_RISK_TOOLS = {
 }
 
 # Medium-risk tools (require approval)
-MEDIUM_RISK_TOOLS = {
+MEDIUM_RISK_TOOLS = frozenset({
     "write_file",
     "edit_file",
     "patch_file",
     "modify_file",
-}
+})
 
 # High-risk commands (block or require strong justification)
 HIGH_RISK_COMMANDS = {
@@ -95,8 +96,8 @@ HIGH_RISK_COMMANDS = {
     "format",
 }
 
-# Dangerous patterns (always block)
-DANGEROUS_PATTERNS = [
+# Dangerous patterns (always block) — precompiled at module level for performance
+_DANGEROUS_PATTERNS_RAW = [
     # Unix
     r"rm\s+-rf\s+/",           # Delete root
     r"chmod\s+777",            # World-writable
@@ -110,10 +111,11 @@ DANGEROUS_PATTERNS = [
     r"rd\s+/s\s+/q",
     r"format\s+[a-zA-Z]:",     # Format drive
     r"powershell.*\biex\b",    # PowerShell invoke-expression from remote
-    r"powershell.*Invoke-Expression", 
+    r"powershell.*Invoke-Expression",
     r"iwr.*\|\s*iex",          # Download and execute (PowerShell)
     r"reg\s+delete\s+HKLM",   # Delete machine-wide registry keys
 ]
+DANGEROUS_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _DANGEROUS_PATTERNS_RAW]
 
 
 @dataclass
@@ -234,7 +236,7 @@ class AutoModeChecker:
         
         # Check dangerous patterns
         for pattern in DANGEROUS_PATTERNS:
-            if re.search(pattern, command, re.IGNORECASE):
+            if pattern.search(command):
                 return RiskAssessment(
                     level=RiskLevel.DANGEROUS,
                     tool_name="run_command",

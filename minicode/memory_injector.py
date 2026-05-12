@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import functools
+import hashlib
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -36,6 +38,17 @@ class MemoryInjector:
         self._last_query: str = ""
         self._last_injection_time: float = 0.0
         self._injection_cooldown: float = 30.0  # Seconds between injections
+        self._task_hash: str = ""
+        self._cached_result: list[InjectedMemory] = []
+
+    @staticmethod
+    def _hash_task(task_description: str, current_files: tuple[str, ...] | None) -> str:
+        """Compute a fast hash for cache key."""
+        h = hashlib.md5(task_description.encode(), usedforsecurity=False)
+        if current_files:
+            for f in current_files:
+                h.update(f.encode())
+        return h.hexdigest()
 
     def inject_for_task(
         self,
@@ -53,6 +66,11 @@ class MemoryInjector:
         """
         if self._memory is None:
             return []
+
+        # Cache check: return cached result for identical tasks
+        task_hash = self._hash_task(task_description, tuple(current_files) if current_files else None)
+        if task_hash == self._task_hash and self._cached_result:
+            return self._cached_result.copy()
 
         # Cooldown check - don't inject too frequently
         if time.time() - self._last_injection_time < self._injection_cooldown:
@@ -112,6 +130,8 @@ class MemoryInjector:
             task_description[:50],
         )
 
+        self._task_hash = task_hash
+        self._cached_result = injected.copy()
         return injected
 
     def inject_on_failure(

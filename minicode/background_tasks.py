@@ -151,19 +151,22 @@ def check_completed_tasks() -> list[str]:
 
     Returns list of completed task IDs.
     """
-    completed = []
+    completed: list[str] = []
     for task_id, record in list(_background_tasks.items()):
-        if record.get("status") == "running":
-            refreshed = _refresh_record(record)
-            if refreshed["status"] != "running":
-                completed.append(task_id)
-                # Fire callback if registered
-                callback = _slot_callbacks.pop(task_id, None)
-                if callback:
-                    try:
-                        callback(task_id, refreshed)
-                    except Exception:
-                        pass  # Don't let callback errors break the loop
+        if record.get("status") != "running":
+            continue
+        refreshed = _refresh_record(record)
+        if refreshed["status"] == "running":
+            continue
+        _background_tasks[task_id] = refreshed
+        completed.append(task_id)
+        # Fire callback if registered
+        callback = _slot_callbacks.pop(task_id, None)
+        if callback:
+            try:
+                callback(task_id, refreshed)
+            except Exception:
+                pass  # Don't let callback errors break the loop
     return completed
 
 

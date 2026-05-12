@@ -13,6 +13,7 @@ Provides:
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -57,7 +58,8 @@ _MEDIUM_COMMANDS = frozenset({
 })
 
 
-def assess_command_risk(command: str, args: list[str]) -> RiskLevel:
+@functools.lru_cache(maxsize=128)
+def assess_command_risk(command: str, args: tuple[str, ...]) -> RiskLevel:
     """Assess the risk level of a command execution.
 
     Args:
@@ -91,11 +93,11 @@ def assess_command_risk(command: str, args: list[str]) -> RiskLevel:
         return RiskLevel.LOW
 
     # Safe: Read-only operations
-    safe_commands = {
+    _SAFE_COMMANDS = frozenset({
         "ls", "pwd", "cat", "head", "tail", "wc", "grep", "find",
         "which", "whoami", "date", "echo", "df", "du", "uname",
-    }
-    if cmd_base in safe_commands:
+    })
+    if cmd_base in _SAFE_COMMANDS:
         return RiskLevel.SAFE
 
     # Default to medium for unknown commands
@@ -379,7 +381,7 @@ def execute_safely(
     Returns:
         ToolResult with execution output and risk metadata
     """
-    risk = assess_command_risk(command, args)
+    risk = assess_command_risk(command, tuple(args))
 
     # Safe and low risk commands execute directly
     if risk in (RiskLevel.SAFE, RiskLevel.LOW):
@@ -451,7 +453,7 @@ def format_risk_info(command: str, args: list[str]) -> str:
     Returns:
         Human-readable risk assessment string
     """
-    risk = assess_command_risk(command, args)
+    risk = assess_command_risk(command, tuple(args))
 
     risk_descriptions = {
         RiskLevel.SAFE: "Read-only operation, no side effects",
