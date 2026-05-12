@@ -154,78 +154,73 @@ def build_system_prompt(
     # Skills section with conditional injection
     skills = extras.get("skills", [])
     if skills:
-        def _build_skills():
-            lines = ["Available skills:"]
-            lines.extend(
+        # Pre-build skills text to avoid regenerating on every call
+        _skills_text = "\n".join([
+            "Available skills:",
+            *(
                 f"- {skill['name']}: {skill['description']}" for skill in skills
-            )
-            lines.extend([
-                "",
-                "SKILL USAGE GUIDE:",
-                "- When user asks for creative brainstorming, use 'brainstorming' skill",
-                "- When writing implementation plans, use 'writing-plans' skill",
-                "- When debugging systematically, use 'systematic-debugging' skill",
-                "- When doing TDD, use 'test-driven-development' skill",
-                "- When reviewing code in Chinese, use 'chinese-code-review' skill",
-                "- When user asks about workflows, check 'using-superpowers' skill first",
-                "- For complex multi-step tasks, consider 'subagent-driven-development'",
-                "- Before completing, ALWAYS use 'verification-before-completion'",
-            ])
-            return "\n".join(lines)
-
-        pipeline.register_dynamic("skills", _build_skills)
-    else:
-        pipeline.register_dynamic(
-            "no_skills",
-            lambda: (
-                "Available skills:\n- none discovered\n"
-                "Tip: Install skills via `npx superpowers-zh` in your project directory"
             ),
+            "",
+            "SKILL USAGE GUIDE:",
+            "- When user asks for creative brainstorming, use 'brainstorming' skill",
+            "- When writing implementation plans, use 'writing-plans' skill",
+            "- When debugging systematically, use 'systematic-debugging' skill",
+            "- When doing TDD, use 'test-driven-development' skill",
+            "- When reviewing code in Chinese, use 'chinese-code-review' skill",
+            "- When user asks about workflows, check 'using-superpowers' skill first",
+            "- For complex multi-step tasks, consider 'subagent-driven-development'",
+            "- Before completing, ALWAYS use 'verification-before-completion'",
+        ])
+        pipeline.register_dynamic("skills", lambda: _skills_text)
+    else:
+        _no_skills_text = (
+            "Available skills:\n- none discovered\n"
+            "Tip: Install skills via `npx superpowers-zh` in your project directory"
         )
+        pipeline.register_dynamic("no_skills", lambda: _no_skills_text)
 
     # MCP servers section
     mcp_servers = extras.get("mcpServers", [])
     if mcp_servers:
-        def _build_mcp():
-            lines = ["Configured MCP servers:"]
-            lines.extend(
-                "- "
-                + server["name"]
-                + f": {server['status']}, tools={server['toolCount']}"
-                + (f", resources={server['resourceCount']}" if server.get("resourceCount") is not None else "")
-                + (f", prompts={server['promptCount']}" if server.get("promptCount") is not None else "")
-                + (f", protocol={server['protocol']}" if server.get("protocol") else "")
-                + (f" ({server['error']})" if server.get("error") else "")
-                for server in mcp_servers
+        # Pre-build MCP text to avoid regenerating on every call
+        _mcp_lines = ["Configured MCP servers:"]
+        _mcp_lines.extend(
+            "- "
+            + server["name"]
+            + f": {server['status']}, tools={server['toolCount']}"
+            + (f", resources={server['resourceCount']}" if server.get("resourceCount") is not None else "")
+            + (f", prompts={server['promptCount']}" if server.get("promptCount") is not None else "")
+            + (f", protocol={server['protocol']}" if server.get("protocol") else "")
+            + (f" ({server['error']})" if server.get("error") else "")
+            for server in mcp_servers
+        )
+        if any(server.get("status") == "connected" for server in mcp_servers):
+            _mcp_lines.append(
+                "Connected MCP tools are already exposed in the tool list with names prefixed like mcp__server__tool. "
+                "Use list_mcp_resources/read_mcp_resource and list_mcp_prompts/get_mcp_prompt when a server exposes those capabilities."
             )
-            if any(server.get("status") == "connected" for server in mcp_servers):
-                lines.append(
-                    "Connected MCP tools are already exposed in the tool list with names prefixed like mcp__server__tool. "
-                    "Use list_mcp_resources/read_mcp_resource and list_mcp_prompts/get_mcp_prompt when a server exposes those capabilities."
-                )
-            # Sequential thinking server detection
-            sequential_servers = [
-                server for server in mcp_servers
-                if "sequential" in server.get("name", "").lower()
-                or "branch-thinking" in server.get("name", "").lower()
-                or "think" in server.get("name", "").lower()
-            ]
-            if any(server.get("status") == "connected" for server in sequential_servers):
-                lines.extend([
-                    "",
-                    "SEQUENTIAL THINKING MCP SERVER IS CONNECTED!",
-                    "When to use sequential_thinking tool:",
-                    "- Breaking down complex implementation problems",
-                    "- Multi-step debugging or investigation",
-                    "- Architectural decisions requiring structured analysis",
-                    "- Migration or refactoring planning",
-                    "- Any situation requiring step-by-step reasoning",
-                    "",
-                    "Usage: Call 'sequential_thinking' with structured thoughts before complex tool sequences",
-                ])
-            return "\n".join(lines)
-
-        pipeline.register_dynamic("mcp", _build_mcp, cache_ttl=60.0)
+        # Sequential thinking server detection
+        _sequential_servers = [
+            server for server in mcp_servers
+            if "sequential" in server.get("name", "").lower()
+            or "branch-thinking" in server.get("name", "").lower()
+            or "think" in server.get("name", "").lower()
+        ]
+        if any(server.get("status") == "connected" for server in _sequential_servers):
+            _mcp_lines.extend([
+                "",
+                "SEQUENTIAL THINKING MCP SERVER IS CONNECTED!",
+                "When to use sequential_thinking tool:",
+                "- Breaking down complex implementation problems",
+                "- Multi-step debugging or investigation",
+                "- Architectural decisions requiring structured analysis",
+                "- Migration or refactoring planning",
+                "- Any situation requiring step-by-step reasoning",
+                "",
+                "Usage: Call 'sequential_thinking' with structured thoughts before complex tool sequences",
+            ])
+        _mcp_text = "\n".join(_mcp_lines)
+        pipeline.register_dynamic("mcp", lambda: _mcp_text, cache_ttl=60.0)
 
     memory_context = str(extras.get("memory_context") or "").strip()
     if memory_context:

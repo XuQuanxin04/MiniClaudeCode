@@ -108,35 +108,31 @@ def _render_prompt_panel(state: ScreenState) -> str:
 
 def _compute_render_hash(args: TtyAppArgs, state: ScreenState) -> int:
     """Compute a hash of the current render state to detect if redraw is needed."""
-    transcript_rev = state.transcript_revision
-    scroll = state.transcript_scroll_offset
-    input_hash = hash(state.input)
-    cursor = state.cursor_offset
-    status = hash(state.status)
+    # Fast path: use a single combined hash to reduce tuple allocation
     approval = 0
-    if state.pending_approval:
+    pa = state.pending_approval
+    if pa:
         approval = hash((
-            state.pending_approval.details_expanded,
-            state.pending_approval.details_scroll_offset,
-            state.pending_approval.selected_choice_index,
-            state.pending_approval.feedback_mode,
-            state.pending_approval.feedback_input,
+            pa.details_expanded,
+            pa.details_scroll_offset,
+            pa.selected_choice_index,
+            pa.feedback_mode,
+            pa.feedback_input,
         ))
     recent_tool_state = tuple(
         (tool.get("name"), tool.get("status"))
         for tool in state.recent_tools[-3:]
     )
-    term_size = _cached_terminal_size()
     return hash((
-        transcript_rev,
-        scroll,
-        input_hash,
-        cursor,
-        status,
+        state.transcript_revision,
+        state.transcript_scroll_offset,
+        state.input,
+        state.cursor_offset,
+        state.status,
         state.active_tool,
         recent_tool_state,
         approval,
-        term_size,
+        _cached_terminal_size(),
     ))
 
 

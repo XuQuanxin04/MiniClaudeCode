@@ -7,6 +7,7 @@ error classification with adaptive backoff strategies.
 
 from __future__ import annotations
 
+import functools
 import random
 import re
 import time
@@ -96,15 +97,9 @@ _NETWORK_ERROR_PATTERNS = re.compile(
 )
 
 
-def classify_error(error: Exception) -> ErrorCategory:
-    """Classify an error into a semantic category for adaptive retry.
-    
-    Uses both HTTP status codes and error message patterns to determine
-    the error category, enabling more intelligent retry decisions.
-    """
-    # Check HTTP status code first (most reliable)
-    status_code = getattr(error, "status_code", None)
-    
+@functools.lru_cache(maxsize=256)
+def _classify_error_cached(error_type: str, error_msg: str, status_code: int | None) -> ErrorCategory:
+    """缓存错误分类结果，避免对相同错误重复正则匹配"""
     if status_code is not None:
         if status_code == 429:
             return ErrorCategory.RATE_LIMIT
@@ -115,25 +110,32 @@ def classify_error(error: Exception) -> ErrorCategory:
         if status_code in (400, 422, 404, 405, 409, 413, 415):
             return ErrorCategory.INPUT_ERROR
         if status_code in (500, 502, 503, 504):
-            # Check for overload in message
-            msg = str(error).lower()
-            if _OVERLOAD_PATTERNS.search(msg):
+            msg_lower = error_msg.lower()
+            if _OVERLOAD_PATTERNS.search(msg_lower):
                 return ErrorCategory.OVERLOAD
             return ErrorCategory.SERVER_ERROR
-    
-    # Check error message patterns for non-HTTP errors
-    msg = str(error)
-    if _NETWORK_ERROR_PATTERNS.search(msg):
+
+    msg_lower = error_msg.lower()
+    if _NETWORK_ERROR_PATTERNS.search(msg_lower):
         return ErrorCategory.NETWORK_ERROR
-    if _OVERLOAD_PATTERNS.search(msg):
+    if _OVERLOAD_PATTERNS.search(msg_lower):
         return ErrorCategory.OVERLOAD
-    
-    # Check for common exception types
-    error_type_name = type(error).__name__.lower()
+
+    error_type_name = error_type.lower()
     if any(name in error_type_name for name in ("timeout", "connection", "socket")):
         return ErrorCategory.NETWORK_ERROR
-    
+
     return ErrorCategory.UNKNOWN
+
+
+def classify_error(error: Exception) -> ErrorCategory:
+    """Classify an error into a semantic category for adaptive retry.
+
+    Uses both HTTP status codes and error message patterns to determine
+    the error category, enabling more intelligent retry decisions.
+    """
+    status_code = getattr(error, "status_code", None)
+    return _classify_error_cached(type(error).__name__, str(error), status_code)
 
 
 def is_retryable(category: ErrorCategory) -> bool:

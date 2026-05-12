@@ -52,17 +52,19 @@ def _suggest_model_name(typed: str) -> str:
     """根据输入建议最接近的合法模型名称"""
     if not typed:
         return ""
-    
+
+    typed_lower = typed.lower()
+
     # 简单的前缀匹配
     for model in KNOWN_MODELS:
-        if model.startswith(typed.lower()):
+        if model.startswith(typed_lower):
             return model
-    
+
     # 模糊匹配：包含输入字符的模型
     for model in KNOWN_MODELS:
-        if typed.lower() in model:
+        if typed_lower in model:
             return model
-    
+
     return ""
 
 

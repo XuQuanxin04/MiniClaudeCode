@@ -56,6 +56,9 @@ _TOOL_OUTPUT_LIMITS: dict[str, int] = {
 # Secondary truncation threshold
 _SECONDARY_MAX_OUTPUT = 3000
 
+# Precompiled error pattern for smart truncation
+_ERROR_PATTERN = re.compile(r'(?i)(error|fail|exception|traceback|warning)')
+
 
 def _smart_truncate_output(output: str, tool_name: str, max_chars: int | None = None) -> str:
     """Intelligently truncate large tool output to preserve context window.

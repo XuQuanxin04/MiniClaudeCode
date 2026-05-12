@@ -101,3 +101,10 @@ def theme() -> ColorTheme:
     if _THEME is None:
         _THEME = _default_theme()
     return _THEME
+
+
+# Pre-computed commonly used color combinations for fast access
+_SUBTLE = theme().subtle
+_RESET = theme().reset
+_BOLD = theme().bold
+_DIM = theme().dim

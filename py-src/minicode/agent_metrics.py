@@ -143,14 +143,18 @@ class AgentMetricsCollector:
         """Get recent turn metrics."""
         return self._turns[-count:]
     
+    _NETWORK_KEYWORDS = frozenset({"connection", "timeout", "network", "refused", "unreachable"})
+    _PERMISSION_KEYWORDS = frozenset({"permission", "access denied", "unauthorized", "forbidden"})
+    _RESOURCE_KEYWORDS = frozenset({"memory", "disk", "space", "resource", "quota"})
+
     def _classify_error(self, error_message: str) -> ErrorCategory:
         """Classify error into category based on message content."""
         error_lower = error_message.lower()
-        if any(kw in error_lower for kw in ["connection", "timeout", "network", "refused", "unreachable"]):
+        if any(kw in error_lower for kw in self._NETWORK_KEYWORDS):
             return ErrorCategory.NETWORK
-        if any(kw in error_lower for kw in ["permission", "access denied", "unauthorized", "forbidden"]):
+        if any(kw in error_lower for kw in self._PERMISSION_KEYWORDS):
             return ErrorCategory.PERMISSION
-        if any(kw in error_lower for kw in ["memory", "disk", "space", "resource", "quota"]):
+        if any(kw in error_lower for kw in self._RESOURCE_KEYWORDS):
             return ErrorCategory.RESOURCE
         if error_message:
             return ErrorCategory.LOGIC

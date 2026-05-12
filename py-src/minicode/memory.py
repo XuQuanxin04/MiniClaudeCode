@@ -13,6 +13,7 @@ Search uses TF-IDF relevance scoring for intelligent retrieval.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import math
@@ -668,7 +669,7 @@ class MemoryFile:
     def format_as_markdown(self, include_header: bool = True) -> str:
         """Format as MEMORY.md content."""
         lines = []
-        
+
         if include_header:
             scope_names = {
                 MemoryScope.USER: "User Memory",
@@ -679,14 +680,12 @@ class MemoryFile:
             lines.append("")
             lines.append(f"*Last updated: {time.strftime('%Y-%m-%d %H:%M')}*")
             lines.append("")
-        
+
         # Group by category
         categories: dict[str, list[MemoryEntry]] = {}
         for entry in self.entries:
-            if entry.category not in categories:
-                categories[entry.category] = []
-            categories[entry.category].append(entry)
-        
+            categories.setdefault(entry.category, []).append(entry)
+
         for category, entries in categories.items():
             lines.append(f"## {category.title()}")
             lines.append("")
@@ -694,7 +693,7 @@ class MemoryFile:
                 tags_str = f" `{' '.join(entry.tags)}`" if entry.tags else ""
                 lines.append(f"- {entry.content}{tags_str}")
             lines.append("")
-        
+
         return "\n".join(lines)
 
 
