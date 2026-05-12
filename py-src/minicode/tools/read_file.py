@@ -64,7 +64,7 @@ def _run(input_data: dict, context) -> ToolResult:
 
     try:
         # 使用缓存读取
-        content = _get_cached_file_content(target)
+        content = _get_file_content(target)
     except UnicodeDecodeError:
         return ToolResult(
             ok=False,

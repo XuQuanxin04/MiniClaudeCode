@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import os
 from pathlib import Path
 from typing import Any
 from minicode.tooling import ToolDefinition, ToolResult
@@ -28,20 +27,28 @@ def _check_unused_imports(tree: ast.AST, content: str) -> list[dict[str, Any]]:
                 name = alias.asname or alias.name
                 imports[name] = {"node": node, "type": "from"}
 
-    # Check if each import is used
-    for name, info in imports.items():
-        # Simple check: search for name in code (excluding import lines)
-        lines = content.split("\n")
-        used = False
-        for i, line in enumerate(lines):
-            # Skip import lines
-            if line.strip().startswith(("import ", "from ")):
-                continue
-            if name in line:
-                used = True
-                break
+    if not imports:
+        return issues
 
-        if not used:
+    # Build a single pass check: split content once, track used imports
+    lines = content.split("\n")
+    used_names = set()
+
+    for line in lines:
+        stripped = line.strip()
+        # Skip import lines
+        if stripped.startswith(("import ", "from ")):
+            continue
+        for name in imports:
+            if name in line:
+                used_names.add(name)
+                if len(used_names) == len(imports):
+                    break
+        if len(used_names) == len(imports):
+            break
+
+    for name, info in imports.items():
+        if name not in used_names:
             issues.append({
                 "type": "unused_import",
                 "severity": "warning",
@@ -150,8 +157,9 @@ def _run(input_data: dict, context) -> ToolResult:
     if target.is_file():
         py_files = [target]
     else:
+        skip_dirs = {".git", "__pycache__", "venv", "env", ".tox", "node_modules"}
         for root, dirs, files in os.walk(target):
-            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "venv", "env", ".tox", "node_modules")]
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
             for f in files:
                 if f.endswith(".py"):
                     py_files.append(Path(root) / f)

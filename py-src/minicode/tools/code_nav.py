@@ -157,9 +157,10 @@ def _run_find_symbols(input_data: dict, context) -> ToolResult:
     if search_path.is_file():
         py_files = [search_path]
     else:
+        skip_dirs = {".git", "__pycache__", "venv", "env", ".tox", "node_modules"}
         for root, dirs, files in os.walk(search_path):
             # Skip common non-source dirs
-            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "venv", "env", ".tox", "node_modules")]
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
             for f in files:
                 if f.endswith(".py"):
                     py_files.append(Path(root) / f)
@@ -232,8 +233,9 @@ def _run_find_references(input_data: dict, context) -> ToolResult:
     if search_path.is_file():
         py_files = [search_path]
     else:
+        skip_dirs = {".git", "__pycache__", "venv", "env", ".tox", "node_modules"}
         for root, dirs, files in os.walk(search_path):
-            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "venv", "env", ".tox", "node_modules")]
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
             for f in files:
                 if f.endswith(".py"):
                     py_files.append(Path(root) / f)

@@ -95,12 +95,12 @@ def _format_mismatch_diagnostic(content: str, search: str) -> str:
             best_start = i
     
     lines = ["Search string not found in file."]
-    
+
     if best_start >= 0 and best_ratio > 0.3:
-        lines.append(f"")
+        lines.append("")
         lines.append(f"Closest match at line {best_start + 1} (similarity: {best_ratio:.0%}):")
         lines.append("")
-        
+
         # Show the closest match with line numbers
         for j, line in enumerate(content_lines[best_start:best_start + window_size]):
             line_num = best_start + 1 + j
@@ -112,7 +112,7 @@ def _format_mismatch_diagnostic(content: str, search: str) -> str:
                 if norm_content != norm_search:
                     prefix = ">>"
             lines.append(f"{prefix} {line_num:4d} | {line}")
-        
+
         # Show diff hint
         if best_ratio < 1.0:
             lines.append("")
@@ -128,7 +128,7 @@ def _format_mismatch_diagnostic(content: str, search: str) -> str:
         lines.append(f"File has {len(content_lines)} lines. First 10 lines:")
         for i, line in enumerate(content_lines[:10]):
             lines.append(f"  {i + 1:4d} | {line}")
-    
+
     return "\n".join(lines)
 
 

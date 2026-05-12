@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import functools
+import os
+import re
 import subprocess
 import sys
-import re
-import os
 from pathlib import Path
 from typing import Any
 from minicode.tooling import ToolDefinition, ToolResult
@@ -14,23 +15,31 @@ from minicode.workspace import resolve_tool_path
 # Test Discovery
 # ---------------------------------------------------------------------------
 
-def _discover_test_files(path: Path, pattern: str = "test_*.py") -> list[Path]:
-    """Discover test files matching pattern."""
+_SKIP_TEST_DIRS = frozenset({".git", "__pycache__", "venv", "env", ".tox", "node_modules"})
+
+
+@functools.lru_cache(maxsize=64)
+def _discover_test_files_cached(path_str: str, pattern: str) -> tuple[str, ...]:
+    """缓存测试文件发现结果，避免重复遍历目录"""
+    path = Path(path_str)
     test_files = []
-    
+
     if path.is_file():
         if path.name.startswith("test_") or path.name.endswith("_test.py"):
-            test_files.append(path)
+            test_files.append(str(path))
     elif path.is_dir():
         for root, dirs, files in os.walk(path):
-            # Skip common non-test dirs
-            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "venv", "env", ".tox", "node_modules")]
-            
+            dirs[:] = [d for d in dirs if d not in _SKIP_TEST_DIRS]
             for f in files:
                 if f.startswith("test_") and f.endswith(".py"):
-                    test_files.append(Path(root) / f)
-    
-    return sorted(test_files)
+                    test_files.append(str(Path(root) / f))
+
+    return tuple(sorted(test_files))
+
+
+def _discover_test_files(path: Path, pattern: str = "test_*.py") -> list[Path]:
+    """Discover test files matching pattern."""
+    return [Path(p) for p in _discover_test_files_cached(str(path), pattern)]
 
 
 # ---------------------------------------------------------------------------

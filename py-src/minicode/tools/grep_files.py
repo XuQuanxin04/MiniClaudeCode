@@ -221,13 +221,19 @@ def _validate(input_data: dict) -> dict:
     }
 
 
+@lru_cache(maxsize=128)
+def _get_compiled_regex(pattern: str, flags: int) -> re.Pattern:
+    """缓存编译后的正则表达式，避免重复编译"""
+    return re.compile(pattern, flags)
+
+
 def _run(input_data: dict, context) -> ToolResult:
     root = resolve_tool_path(context, input_data["path"], "search")
-    
-    # Compile regex
+
+    # Compile regex (with cache)
     flags = 0 if input_data.get("case_sensitive", False) else re.IGNORECASE
     try:
-        regex = re.compile(input_data["pattern"], flags)
+        regex = _get_compiled_regex(input_data["pattern"], flags)
     except re.error as e:
         return ToolResult(ok=False, output=f"Invalid regex: {e}")
     
