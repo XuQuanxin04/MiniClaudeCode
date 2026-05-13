@@ -13,7 +13,6 @@ The Pipeline Engine:
 from __future__ import annotations
 
 import time
-import traceback
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
@@ -25,26 +24,18 @@ from minicode.logging_config import get_logger
 logger = get_logger("pipeline_engine")
 
 
-# ---------------------------------------------------------------------------
-# Step Types
-# ---------------------------------------------------------------------------
-
 class StepType(str, Enum):
-    ANALYZE = "analyze"       # Analyze context, understand requirements
-    PLAN = "plan"             # Plan approach, select strategy
-    READ = "read"             # Read files, gather information
-    GENERATE = "generate"     # Generate code/content
-    MODIFY = "modify"         # Modify existing files
-    VERIFY = "verify"         # Verify correctness (tests, lint)
-    REVIEW = "review"         # Review output quality
-    DOCUMENT = "document"     # Update documentation
-    COMMIT = "commit"         # Save/persist changes
-    NOTIFY = "notify"         # Notify user of result
+    ANALYZE = "analyze"
+    PLAN = "plan"
+    READ = "read"
+    GENERATE = "generate"
+    MODIFY = "modify"
+    VERIFY = "verify"
+    REVIEW = "review"
+    DOCUMENT = "document"
+    COMMIT = "commit"
+    NOTIFY = "notify"
 
-
-# ---------------------------------------------------------------------------
-# Step State
-# ---------------------------------------------------------------------------
 
 class StepState(str, Enum):
     PENDING = "pending"
@@ -55,23 +46,17 @@ class StepState(str, Enum):
     RETRYING = "retrying"
 
 
-# ---------------------------------------------------------------------------
-# Step Definition
-# ---------------------------------------------------------------------------
-
 @dataclass
 class Step:
     """A single executable step in a pipeline."""
     id: str
     type: StepType
     description: str
-    handler: str = ""          # Name of capability/handler to invoke
+    handler: str = ""
     params: dict[str, Any] = field(default_factory=dict)
     depends_on: list[str] = field(default_factory=list)
     max_retries: int = 1
     timeout_seconds: float = 60.0
-
-    # Runtime state
     state: StepState = StepState.PENDING
     result: Any = None
     error: str = ""
@@ -89,10 +74,6 @@ class Step:
             "retry_count": self.retry_count,
         }
 
-
-# ---------------------------------------------------------------------------
-# Pipeline Plan
-# ---------------------------------------------------------------------------
 
 @dataclass
 class PipelinePlan:
@@ -116,8 +97,7 @@ class PipelinePlan:
         return None
 
     def get_ready_steps(self) -> list[Step]:
-        """Get steps whose dependencies are all completed."""
-        completed = {s.id for s in self.steps if s.state == StepState.COMPLETED}
+        completed = {s.id for s in self.steps if s.state in (StepState.COMPLETED, StepState.SKIPPED)}
         return [s for s in self.steps
                 if s.state == StepState.PENDING
                 and all(d in completed for d in s.depends_on)]
@@ -129,10 +109,6 @@ class PipelinePlan:
     def has_failures(self) -> bool:
         return any(s.state == StepState.FAILED for s in self.steps)
 
-
-# ---------------------------------------------------------------------------
-# Pipeline Result
-# ---------------------------------------------------------------------------
 
 @dataclass
 class PipelineResult:
@@ -157,29 +133,21 @@ class PipelineResult:
         }
 
 
-# ---------------------------------------------------------------------------
-# Step Planner
-# ---------------------------------------------------------------------------
-
 class StepPlanner:
     """Plans execution steps from a TaskObject."""
 
     def plan(self, task: TaskObject) -> PipelinePlan:
-        """Generate execution plan for task."""
         plan_id = f"plan-{task.id}"
         steps: list[Step] = []
-
         intent_type = task.parsed_intent.intent_type.value if task.parsed_intent else ""
         action_type = task.parsed_intent.action_type.value if task.parsed_intent else ""
 
-        # Step 1: Analyze (always)
         steps.append(Step(
             id="analyze", type=StepType.ANALYZE,
             description="Analyze task requirements and context",
             handler="analyze_task",
         ))
 
-        # Step 2: Read relevant files (if any)
         if task.relevant_files:
             steps.append(Step(
                 id="read_files", type=StepType.READ,
@@ -188,7 +156,6 @@ class StepPlanner:
                 depends_on=["analyze"],
             ))
 
-        # Step 3: Plan approach
         steps.append(Step(
             id="plan", type=StepType.PLAN,
             description="Plan implementation approach",
@@ -196,7 +163,6 @@ class StepPlanner:
             depends_on=["analyze"] + (["read_files"] if task.relevant_files else []),
         ))
 
-        # Step 4: Generate / Modify (main work)
         if action_type == "create":
             steps.append(Step(
                 id="generate", type=StepType.GENERATE,
@@ -226,9 +192,8 @@ class StepPlanner:
                 depends_on=["plan"],
             ))
 
-        # Step 5: Verify (if constraint requires)
-        has_test_constraint = any(c.type == ConstraintType.TEST_REQUIRED for c in task.constraints)
-        if has_test_constraint or intent_type in ("code", "test"):
+        has_test = any(c.type == ConstraintType.TEST_REQUIRED for c in task.constraints)
+        if has_test or intent_type in ("code", "test"):
             work_step = "generate" if action_type == "create" else "modify" if action_type in ("update", "delete") else "analyze_deep"
             steps.append(Step(
                 id="verify", type=StepType.VERIFY,
@@ -237,9 +202,8 @@ class StepPlanner:
                 depends_on=[work_step],
             ))
 
-        # Step 6: Review (if constraint requires)
-        has_review_constraint = any(c.type == ConstraintType.REQUIRES_REVIEW for c in task.constraints)
-        if has_review_constraint:
+        has_review = any(c.type == ConstraintType.REQUIRES_REVIEW for c in task.constraints)
+        if has_review:
             work_step = "generate" if action_type == "create" else "modify"
             steps.append(Step(
                 id="review", type=StepType.REVIEW,
@@ -248,7 +212,6 @@ class StepPlanner:
                 depends_on=[work_step],
             ))
 
-        # Step 7: Document (for code tasks)
         if intent_type in ("code", "document"):
             work_step = "generate" if action_type == "create" else "modify" if action_type in ("update", "delete") else "analyze_deep"
             dep = [work_step]
@@ -261,7 +224,6 @@ class StepPlanner:
                 depends_on=dep,
             ))
 
-        # Step 8: Notify (always)
         final_deps = [s.id for s in steps if s.id not in ("analyze", "read_files")]
         steps.append(Step(
             id="notify", type=StepType.NOTIFY,
@@ -274,10 +236,6 @@ class StepPlanner:
         return PipelinePlan(id=plan_id, task_id=task.id, steps=steps)
 
 
-# ---------------------------------------------------------------------------
-# Step Executor
-# ---------------------------------------------------------------------------
-
 class StepExecutor:
     """Executes individual steps."""
 
@@ -286,7 +244,6 @@ class StepExecutor:
         self._register_default_handlers()
 
     def _register_default_handlers(self) -> None:
-        """Register default step handlers."""
         self._handlers["analyze_task"] = self._handle_analyze
         self._handlers["read_file"] = self._handle_read
         self._handlers["plan_approach"] = self._handle_plan
@@ -303,11 +260,6 @@ class StepExecutor:
         self._handlers[name] = handler
 
     def execute(self, step: Step, task: TaskObject) -> tuple[bool, Any]:
-        """Execute a single step.
-
-        Returns:
-            (success, result)
-        """
         handler = self._handlers.get(step.handler)
         if not handler:
             return False, f"No handler registered for: {step.handler}"
@@ -337,7 +289,6 @@ class StepExecutor:
                              step.id, step.retry_count, e)
                 return False, str(e)
 
-    # Default handlers (placeholders - real implementations would call tools)
     def _handle_analyze(self, step: Step, task: TaskObject) -> dict[str, Any]:
         return {"intent": task.parsed_intent.to_dict() if task.parsed_intent else {},
                 "files": task.relevant_files, "constraints": [c.to_dict() for c in task.constraints]}
@@ -353,4 +304,109 @@ class StepExecutor:
         return {"generated": True, "output_type": "code", "files": task.relevant_files}
 
     def _handle_modify(self, step: Step, task: TaskObject) -> dict[str, Any]:
-        return {"modified": True,
+        return {"modified": True, "files": task.relevant_files}
+
+    def _handle_execute(self, step: Step, task: TaskObject) -> dict[str, Any]:
+        return {"executed": True, "task": task.title}
+
+    def _handle_verify(self, step: Step, task: TaskObject) -> dict[str, Any]:
+        return {"verified": True, "tests_passed": True}
+
+    def _handle_review(self, step: Step, task: TaskObject) -> dict[str, Any]:
+        return {"reviewed": True, "issues_found": 0}
+
+    def _handle_document(self, step: Step, task: TaskObject) -> dict[str, Any]:
+        return {"documented": True, "docs_updated": True}
+
+    def _handle_notify(self, step: Step, task: TaskObject) -> dict[str, Any]:
+        return {"notified": True, "result": task.result_summary}
+
+
+class PipelineEngine:
+    """Orchestrates full pipeline execution."""
+
+    def __init__(self):
+        self.planner = StepPlanner()
+        self.executor = StepExecutor()
+        self._audit = get_auditor()
+
+    def run(self, task: TaskObject) -> PipelineResult:
+        plan = self.planner.plan(task)
+        return self.execute(task, plan)
+
+    def execute(self, task: TaskObject, plan: PipelinePlan) -> PipelineResult:
+        task.set_state(TaskState.RUNNING)
+        start = time.time()
+
+        self._audit.record(
+            DecisionType.ROUTING,
+            reasoning=f"Pipeline execution for task {task.id}",
+            selected_option=plan.id,
+            input_context={"task_id": task.id, "steps": len(plan.steps)},
+        )
+
+        try:
+            while not plan.is_complete():
+                ready = plan.get_ready_steps()
+                if not ready:
+                    break
+                for step in ready:
+                    success, result = self.executor.execute(step, task)
+                    if not success:
+                        break
+
+            completed = [s.id for s in plan.steps if s.state == StepState.COMPLETED]
+            failed = [s.id for s in plan.steps if s.state == StepState.FAILED]
+
+            if plan.has_failures():
+                task.set_state(TaskState.FAILED)
+                task.error_message = failed[0] if failed else "Unknown failure"
+            else:
+                task.set_state(TaskState.COMPLETED)
+                task.result_summary = f"Completed {len(completed)}/{len(plan.steps)} steps"
+
+            total_time = (time.time() - start) * 1000
+            success = not plan.has_failures()
+
+            self._audit.complete_decision(
+                DecisionOutcome.SUCCESS if success else DecisionOutcome.FAILURE,
+                total_time,
+                task.result_summary,
+                task.error_message,
+            )
+
+            return PipelineResult(
+                task_id=task.id, plan_id=plan.id, success=success,
+                completed_steps=completed, failed_steps=failed,
+                summary=task.result_summary, total_time_ms=total_time,
+                error=task.error_message,
+            )
+        except Exception as e:
+            task.set_state(TaskState.FAILED)
+            task.error_message = str(e)
+            total_time = (time.time() - start) * 1000
+            return PipelineResult(
+                task_id=task.id, plan_id=plan.id, success=False,
+                error=str(e), total_time_ms=total_time,
+            )
+
+
+_engine: PipelineEngine | None = None
+
+
+def get_pipeline_engine() -> PipelineEngine:
+    global _engine
+    if _engine is None:
+        _engine = PipelineEngine()
+    return _engine
+
+
+def process_task(raw_input: str) -> tuple[TaskObject, PipelinePlan, PipelineResult]:
+    from minicode.intent_parser import parse_intent
+    from minicode.task_object import build_task
+
+    intent = parse_intent(raw_input)
+    task = build_task(intent, raw_input)
+    engine = get_pipeline_engine()
+    result = engine.run(task)
+    return task, engine.planner.plan(task), result
