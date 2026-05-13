@@ -6,6 +6,7 @@ within token limits while preserving critical information for coding tasks.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import os
@@ -91,8 +92,8 @@ def estimate_tokens(text: str) -> int:
     if not text:
         return 0
     
-    # Cache lookup (short strings as key, long strings by hash)
-    cache_key = text if len(text) < 256 else hash(text)
+    # Cache lookup (short strings as key, long strings by md5 hash)
+    cache_key = text if len(text) < 256 else hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
     cached = _token_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -181,43 +182,45 @@ _DECISION_KEYWORDS = re.compile(
 def _extract_from_messages(messages: list[dict[str, Any]]) -> _ExtractedInfo:
     """Extract structured information from messages for layered summarization."""
     info = _ExtractedInfo()
-    
+
     for msg in messages:
         role = msg.get("role", "")
         content = msg.get("content", "")
-        
+
         if role == "user" and content:
             if len(content) < 200:  # Likely a task or question
                 info.user_intents.append(content)
-        
+
         elif role == "assistant" and content:
             # Extract decisions and conclusions
             if _DECISION_KEYWORDS.search(content):
                 info.decisions.append(content[:150])
             if len(content) > 100:  # Likely contains conclusions
                 info.assistant_conclusions.append(content[-100:])
-        
+
         elif role == "assistant_tool_call":
             tool_name = msg.get("toolName", "")
             if tool_name:
                 info.tool_names.append(tool_name)
-        
+
         elif role == "tool_result" and content:
+            content_str = str(content)
+            content_lower = content_str.lower()
             # Keep successful file operation confirmations
             if not msg.get("isError", False):
-                if any(tool in str(content).lower() for tool in ["saved", "created", "updated", "modified"]):
-                    info.key_tool_results.append(str(content)[:100])
-            
+                if any(tool in content_lower for tool in ["saved", "created", "updated", "modified"]):
+                    info.key_tool_results.append(content_str[:100])
+
             # Extract code snippets from tool results
-            code_matches = _CODE_FENCE_RE.findall(str(content))
+            code_matches = _CODE_FENCE_RE.findall(content_str)
             for code in code_matches[:2]:  # Keep up to 2 snippets
                 if len(code) < 200:
                     info.code_snippets.append(code)
-            
+
             # Extract file paths
-            path_matches = re.findall(r'(?:in|at|from|path:?)\s+([/\w\.\-]+)', str(content))
+            path_matches = re.findall(r'(?:in|at|from|path:?)\s+([/\w\.\-]+)', content_str)
             info.file_paths.update(path_matches)
-    
+
     return info
 
 
@@ -366,15 +369,17 @@ class ContextManager:
         _DEFAULT_TRUNCATE = 2000
         
         for i, m in enumerate(filtered):
-            if m.get("role") != "tool_result":
+            role = m.get("role")
+            if role != "tool_result":
                 continue
             content = m.get("content", "")
-            if not content or len(content) <= _DEFAULT_TRUNCATE:
+            content_len = len(content)
+            if not content or content_len <= _DEFAULT_TRUNCATE:
                 continue
-            
+
             tool_name = m.get("toolName", "")
             is_error = m.get("isError", False)
-            
+
             if is_error:
                 threshold = _ERROR_TRUNCATE
             elif tool_name in _EDIT_TOOLS:
@@ -383,8 +388,8 @@ class ContextManager:
                 threshold = _READ_TOOL_TRUNCATE
             else:
                 threshold = _DEFAULT_TRUNCATE
-            
-            if len(content) <= threshold:
+
+            if content_len <= threshold:
                 continue
             
             content_lines = content.split("\n")

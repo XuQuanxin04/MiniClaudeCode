@@ -225,25 +225,26 @@ class HookManager:
         for registration in self._hooks[event]:
             if not registration.enabled or registration.is_async:
                 continue
-            
+
             start_time = time.time()
             try:
                 result = registration.handler(context)
                 registration.call_count += 1
-                registration.last_called = time.time()
-                
-                duration_ms = int((time.time() - start_time) * 1000)
+                now = time.time()
+                registration.last_called = now
+
+                duration_ms = int((now - start_time) * 1000)
                 registration.total_duration_ms += duration_ms
-                
+
                 # Warn about slow hooks
                 if duration_ms > 5000:
                     logger.warning(
                         "Hook %s for %s took %dms (exceeds 5s threshold)",
                         registration.name, event.value, duration_ms
                     )
-                
+
                 results.append(result)
-            
+
             except Exception as e:
                 results.append(f"Hook error: {e}")
         
