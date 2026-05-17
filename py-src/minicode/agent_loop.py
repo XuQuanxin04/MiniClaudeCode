@@ -40,13 +40,14 @@ from minicode.decoupling_controller import DecouplingController
 from minicode.predictive_controller import PredictiveController, PredictionHorizon
 from minicode.self_healing_engine import SelfHealingEngine, FaultType, FaultSeverity
 
-# 上下文管理集成 (Claude Code-style)
+# 上下文管理集成 (Claude Code-style + Engineering Cybernetics)
 from minicode.context_compactor import (
     ContextCompactor,
     AutoCompactConfig,
     CompactTrigger,
     CompactStrategy,
 )
+from minicode.context_cybernetics import ContextCyberneticsOrchestrator
 from minicode.memory import MemoryManager
 
 logger = get_logger("agent_loop")
@@ -420,8 +421,9 @@ def run_agent_turn(
         self_healing_engine = SelfHealingEngine()
         logger.info("Self-healing engine initialized: automated recovery")
 
-        # 初始化上下文管理器 (Claude Code-style 三段式)
+        # 初始化上下文管理器 (Claude Code-style + Engineering Cybernetics)
         context_compactor: ContextCompactor | None = None
+        context_cybernetics: ContextCyberneticsOrchestrator | None = None
         if context_manager:
             compact_config = AutoCompactConfig(
                 threshold_ratio=0.85,
@@ -436,7 +438,17 @@ def run_agent_turn(
                 estimate_fn=estimate_message_tokens,
                 config=compact_config,
             )
-            logger.info("ContextCompactor initialized: Claude Code-style pipeline + MemoryManager linked")
+            context_cybernetics = ContextCyberneticsOrchestrator(
+                context_compactor,
+                kp=2.0, ki=0.15, kd=0.3,
+                pid_setpoint=0.70,
+                base_threshold=0.85,
+                safety_margin_turns=3,
+                enabled=True,
+            )
+            if task and hasattr(task, 'parsed_intent') and task.parsed_intent:
+                context_cybernetics.set_intent(str(task.parsed_intent.intent_type))
+            logger.info("ContextCybernetics initialized: PID control loop + predictive guard")
 
     # 检查上下文状态 + 运行 Claude Code-style 预请求优化管线
     if context_manager:
@@ -445,8 +457,26 @@ def run_agent_turn(
         logger.info("Context: %d tokens (%.0f%%), %d messages",
                    stats.total_tokens, stats.usage_percentage, stats.messages_count)
 
-        # 运行完整预请求优化管线 (Tool Budget → Microcompact → Auto Compact)
-        if context_compactor:
+        # 运行控制论闭环优化管线 (Sense → Predict → Control → Act → Learn)
+        if context_cybernetics:
+            cyber_messages, cyber_result, cyber_action = context_cybernetics.run_cycle(
+                current_messages,
+                error_rate=float(tool_error_count) / max(step, 1) if step > 0 else 0.0,
+                avg_latency=step * 2.0,
+                turn_id=step,
+            )
+            if cyber_result and cyber_result.effective:
+                current_messages = cyber_messages
+                context_manager.messages = current_messages
+                logger.info(
+                    "Cybernetics[%s]: %s intensity=%.2f freed=%d tokens [%s]",
+                    cyber_action.reason if cyber_action else "unknown",
+                    cyber_result.strategy.value,
+                    cyber_action.compaction_intensity if cyber_action else 0,
+                    cyber_result.tokens_freed,
+                    cyber_result.summary_text[:80] if cyber_result.summary_text else "",
+                )
+        elif context_compactor:
             compaction_result = context_compactor.process_request(current_messages)
             if compaction_result.effective:
                 current_messages = compaction_result.messages
@@ -540,9 +570,22 @@ def run_agent_turn(
                 fallback = f"Model API error ({error_type}): {error}"
                 logger.error("Model API error (%s): %s", error_type, error)
 
-                # Reactive Compact: 尝试从上下文溢出中恢复
-                if context_compactor and "prompt" in str(error).lower() or "too long" in str(error).lower():
-                    recovery_result = context_compactor.reactive_recover(current_messages, str(error))
+                # Reactive Compact: 控制论恢复路径
+                error_str = str(error).lower()
+                needs_recovery = "prompt" in error_str and ("too long" in error_str or "exceeds" in error_str)
+                if context_cybernetics and needs_recovery:
+                    recovered_messages, recovery_result = context_cybernetics.try_reactive_recover(current_messages, error_str)
+                    if recovery_result and recovery_result.effective:
+                        current_messages = recovered_messages
+                        if context_manager:
+                            context_manager.messages = current_messages
+                        logger.info(
+                            "Cybernetics Reactive recovered: freed %d tokens",
+                            recovery_result.tokens_freed,
+                        )
+                        continue
+                elif context_compactor and needs_recovery:
+                    recovery_result = context_compactor.reactive_recover(current_messages, error_str)
                     if recovery_result and recovery_result.effective:
                         current_messages = recovery_result.messages
                         if context_manager:
@@ -551,7 +594,7 @@ def run_agent_turn(
                             "Reactive Compact recovered: freed %d tokens",
                             recovery_result.tokens_freed,
                         )
-                        continue  # Retry with compacted messages
+                        continue
 
                 if on_assistant_message:
                     on_assistant_message(fallback)
@@ -950,7 +993,7 @@ def run_agent_turn(
                 coupling_status = decoupling_controller.get_coupling_status()
                 logger.info("Coupling status: strong=%s", coupling_status.get("strong_couplings", []))
 
-        # 上下文管理管线统计 (Claude Code-style)
+        # 上下文管理管线统计 (Claude Code-style + Cybernetics)
         if context_compactor:
             compactor_stats = context_compactor.get_stats()
             logger.info(
@@ -962,5 +1005,19 @@ def run_agent_turn(
                 compactor_stats["microcompact_tokens_cleared"],
                 compactor_stats["auto_compact_boundaries"],
                 "TRIPPED" if compactor_stats["circuit_breaker_tripped"] else "OK",
+            )
+        # 控制论闭环统计 (Engineering Cybernetics)
+        if context_cybernetics:
+            cyber_stats = context_cybernetics.get_stats()
+            logger.info(
+                "Cybernetics: cycles=%d usage=%.1f%% pid_out=%.2f "
+                "predict_overflow=%s urgency=%.2f threshold=%.2f feedback_eff=%.0f%%",
+                cyber_stats["cycles_executed"],
+                (cyber_stats["sensor"]["current_usage"] or 0) * 100,
+                cyber_stats["pid"]["last_output"] or 0,
+                cyber_stats["predictor"]["turns_until_overflow"],
+                cyber_stats["predictor"]["urgency"] or 0,
+                cyber_stats["threshold"]["effective_threshold"] or 0,
+                (cyber_stats["feedback"]["effectiveness_rate"] or 0) * 100,
             )
 
