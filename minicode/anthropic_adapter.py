@@ -197,7 +197,7 @@ class AnthropicModelAdapter:
                 category = classify_error(error)
                 retry_after = _parse_retry_after_seconds(error.headers.get("retry-after"))
                 wait = calculate_backoff(attempt, retry_after=retry_after,
-                                        error_category=category.value)
+                                        category=category)
                 time.sleep(wait)
             except urllib.error.URLError:
                 if attempt >= max_retries:
