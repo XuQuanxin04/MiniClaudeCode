@@ -13,14 +13,13 @@ Routing strategies:
 from __future__ import annotations
 
 import functools
-import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 from minicode.logging_config import get_logger
-from minicode.model_registry import BUILTIN_MODELS, ModelInfo, Provider
+from minicode.model_registry import BUILTIN_MODELS, ModelInfo
 
 logger = get_logger("agent_router")
 

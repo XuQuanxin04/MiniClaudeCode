@@ -18,7 +18,6 @@ Architecture:
 """
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import time

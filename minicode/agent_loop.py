@@ -8,7 +8,7 @@ from typing import Any, Callable
 from minicode.context_manager import ContextManager, estimate_message_tokens
 from minicode.logging_config import get_logger
 from minicode.permissions import PermissionManager
-from minicode.state import Store, AppState, increment_tool_calls, add_cost, record_api_error, update_context_usage, set_busy, set_idle
+from minicode.state import Store, AppState, increment_tool_calls, set_busy, set_idle
 from minicode.tooling import ToolContext, ToolRegistry, ToolResult
 from minicode.types import AgentStep, ChatMessage, ModelAdapter
 
@@ -17,7 +17,7 @@ from minicode.hooks import HookEvent, fire_hook_sync
 
 # Intelligence integration
 from minicode.agent_metrics import AgentMetricsCollector
-from minicode.agent_intelligence import ErrorClassifier, NudgeGenerator, RecoveryStrategy, ToolScheduler
+from minicode.agent_intelligence import ErrorClassifier, NudgeGenerator, ToolScheduler
 from minicode.working_memory import protect_context
 
 # Work chain integration
@@ -25,21 +25,21 @@ from minicode.intent_parser import parse_intent
 from minicode.task_object import build_task, TaskObject, TaskState
 from minicode.pipeline_engine import get_pipeline_engine, PipelineEngine
 from minicode.capability_registry import get_registry, CapabilityDomain
-from minicode.layered_context import ContextBuilder, LayeredContext, ContextLayer
-from minicode.decision_audit import get_auditor, DecisionType, DecisionOutcome
+from minicode.layered_context import ContextBuilder, LayeredContext
+from minicode.decision_audit import get_auditor, DecisionOutcome
 
 # 工程控制论集成
 from minicode.cybernetic_supervisor import CyberneticSupervisor, save_supervisor_report
-from minicode.feedback_controller import FeedbackController, SystemState
-from minicode.feedforward_controller import FeedforwardController, PreemptiveConfig
-from minicode.stability_monitor import StabilityMonitor, HealthLevel
+from minicode.feedback_controller import FeedbackController
+from minicode.feedforward_controller import FeedforwardController
+from minicode.stability_monitor import StabilityMonitor
 
 # 高级控制论模块
-from minicode.adaptive_pid_tuner import AdaptivePIDTuner, PIDParameters
-from minicode.state_observer import StateObserver, MeasurementVector, ObservedState
+from minicode.adaptive_pid_tuner import AdaptivePIDTuner
+from minicode.state_observer import StateObserver, MeasurementVector
 from minicode.decoupling_controller import DecouplingController
-from minicode.predictive_controller import PredictiveController, PredictionHorizon
-from minicode.self_healing_engine import SelfHealingEngine, FaultType, FaultSeverity
+from minicode.predictive_controller import PredictiveController
+from minicode.self_healing_engine import SelfHealingEngine
 
 # 任务进度控制
 from minicode.progress_controller import ProgressController, ProgressSignal, ProgressAction
@@ -57,8 +57,6 @@ from minicode.model_switcher import ModelSwitcher
 from minicode.context_compactor import (
     ContextCompactor,
     AutoCompactConfig,
-    CompactTrigger,
-    CompactStrategy,
 )
 from minicode.context_cybernetics import ContextCyberneticsOrchestrator
 from minicode.cost_control import CostControlLoop
@@ -241,7 +239,8 @@ def _execute_single_tool(
             store.set_state(set_busy(tool_name))
         
         # Execute the tool with timeout protection
-        import concurrent.futures, os
+        import concurrent.futures
+        import os
         TOOL_TIMEOUT = int(os.environ.get("MINICODE_TOOL_TIMEOUT", "120"))
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:

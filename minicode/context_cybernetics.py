@@ -45,12 +45,11 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Callable
+from typing import Any
 
 from .context_compactor import (
-    AutoCompactConfig,
     CompactStrategy,
     CompactTrigger,
     CompactionResult,

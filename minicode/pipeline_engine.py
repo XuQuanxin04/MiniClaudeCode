@@ -18,8 +18,11 @@ from enum import Enum
 from typing import Any, Callable
 
 from minicode.task_object import TaskObject, TaskState, ConstraintType
+from minicode.cybernetic_supervisor import CyberneticSupervisor
 from minicode.decision_audit import get_auditor, DecisionType, DecisionOutcome
 from minicode.logging_config import get_logger
+from minicode.progress_controller import ProgressController, ProgressSignal
+from minicode.verification_controller import VerificationController
 
 logger = get_logger("pipeline_engine")
 
@@ -241,6 +244,7 @@ class StepExecutor:
 
     def __init__(self):
         self._handlers: dict[str, Callable[..., Any]] = {}
+        self._verification_controller = VerificationController()
         self._register_default_handlers()
 
     def _register_default_handlers(self) -> None:
@@ -310,7 +314,12 @@ class StepExecutor:
         return {"executed": True, "task": task.title}
 
     def _handle_verify(self, step: Step, task: TaskObject) -> dict[str, Any]:
-        return {"verified": True, "tests_passed": True}
+        plan = self._verification_controller.plan_for_task(task)
+        return {
+            "verified": plan.mode.value == "none",
+            "tests_passed": None,
+            "verification_plan": plan.to_dict(),
+        }
 
     def _handle_review(self, step: Step, task: TaskObject) -> dict[str, Any]:
         return {"reviewed": True, "issues_found": 0}
@@ -329,6 +338,8 @@ class PipelineEngine:
         self.planner = StepPlanner()
         self.executor = StepExecutor()
         self._audit = get_auditor()
+        self._progress_controller = ProgressController()
+        self._supervisor = CyberneticSupervisor()
 
     def run(self, task: TaskObject) -> PipelineResult:
         plan = self.planner.plan(task)
@@ -357,6 +368,7 @@ class PipelineEngine:
 
             completed = [s.id for s in plan.steps if s.state == StepState.COMPLETED]
             failed = [s.id for s in plan.steps if s.state == StepState.FAILED]
+            outputs = {s.id: s.result for s in plan.steps if s.result is not None}
 
             if plan.has_failures():
                 task.set_state(TaskState.FAILED)
@@ -367,6 +379,31 @@ class PipelineEngine:
 
             total_time = (time.time() - start) * 1000
             success = not plan.has_failures()
+            verify_result = outputs.get("verify") if isinstance(outputs.get("verify"), dict) else {}
+            tests_passed = verify_result.get("tests_passed") if verify_result else None
+            progress_decision = self._progress_controller.decide(ProgressSignal(
+                total_steps=len(plan.steps),
+                completed_steps=len(completed),
+                failed_steps=len(failed),
+                tool_calls=len(completed) + len(failed),
+                tool_errors=len(failed),
+                output_changed=bool(outputs),
+                tests_passed=tests_passed,
+                elapsed_seconds=total_time / 1000,
+                max_steps=len(plan.steps),
+            ))
+            outputs["progress_control"] = progress_decision.to_dict()
+            supervisor_snapshots = [
+                self._supervisor.snapshot_from_decision("progress", outputs["progress_control"])
+            ]
+            if isinstance(verify_result, dict) and isinstance(verify_result.get("verification_plan"), dict):
+                supervisor_snapshots.append(
+                    self._supervisor.snapshot_from_decision(
+                        "verification",
+                        verify_result["verification_plan"],
+                    )
+                )
+            outputs["cybernetic_supervisor"] = self._supervisor.report(supervisor_snapshots).to_dict()
 
             self._audit.complete_decision(
                 DecisionOutcome.SUCCESS if success else DecisionOutcome.FAILURE,
@@ -378,7 +415,7 @@ class PipelineEngine:
             return PipelineResult(
                 task_id=task.id, plan_id=plan.id, success=success,
                 completed_steps=completed, failed_steps=failed,
-                summary=task.result_summary, total_time_ms=total_time,
+                outputs=outputs, summary=task.result_summary, total_time_ms=total_time,
                 error=task.error_message,
             )
         except Exception as e:

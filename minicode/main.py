@@ -6,12 +6,12 @@ import os
 from pathlib import Path
 
 from minicode.agent_loop import run_agent_turn
-from minicode.cli_commands import find_matching_slash_commands, try_handle_local_command
+from minicode.cli_commands import try_handle_local_command
 from minicode.config import load_runtime_config
 from minicode.history import load_history_entries, save_history_entries
 from minicode.local_tool_shortcuts import parse_local_tool_shortcut
 from minicode.manage_cli import maybe_handle_management_command
-from minicode.model_registry import create_model_adapter, detect_provider, format_model_status, format_model_list
+from minicode.model_registry import create_model_adapter
 from minicode.permissions import PermissionManager
 from minicode.prompt import build_system_prompt
 from minicode.tools import create_default_tool_registry

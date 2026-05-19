@@ -144,7 +144,8 @@ class MemoryPipeline:
         if not path:
             return
         try:
-            import json, os
+            import json
+            import os
             os.makedirs(os.path.dirname(path), exist_ok=True)
             state = {
                 "read_count": self._read_count,
@@ -166,7 +167,8 @@ class MemoryPipeline:
         if not path:
             return
         try:
-            import json, os
+            import json
+            import os
             if not os.path.exists(path):
                 return
             with open(path, "r", encoding="utf-8") as f:
@@ -497,7 +499,6 @@ class MemoryPipeline:
         self, task_description: str, active_domains: list[str] | None, max_results: int
     ) -> list[Any]:
         """Search with query reformulation fallback for poor initial results."""
-        from minicode.memory import MemoryScope
 
         entries = self._memory.search(
             task_description, limit=max_results, active_domains=active_domains,

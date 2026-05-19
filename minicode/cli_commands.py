@@ -26,6 +26,7 @@ SLASH_COMMANDS = [
     SlashCommand("/status", "/status", "Show application state summary and current model."),
     SlashCommand("/cost", "/cost [--detailed]", "Show API cost and usage report."),
     SlashCommand("/context", "/context", "Show context window usage."),
+    SlashCommand("/cybernetics", "/cybernetics", "Show cybernetic control system status."),
     SlashCommand("/tasks", "/tasks", "Show current task list."),
     SlashCommand("/memory", "/memory", "Show memory system status."),
     SlashCommand("/config", "/config", "Show configuration diagnostics and validation."),
@@ -79,6 +80,7 @@ def format_slash_commands() -> str:
             ("/user", "Show or manage user profile"),
             ("/cost", "Show API cost and usage report"),
             ("/context", "Show context window usage"),
+            ("/cybernetics", "Show control-system status"),
             ("/tasks", "Show current task list"),
             ("/memory", "Show memory system status"),
         ],
@@ -185,6 +187,9 @@ def try_handle_local_command(user_input: str, tools=None, cwd: str | None = None
         except Exception as e:
             return f"Error loading context: {e}"
 
+    if user_input == "/cybernetics":
+        return format_cybernetics_status()
+
     if user_input == "/mcp":
         servers = tools.get_mcp_servers() if tools else []
         if not servers:
@@ -268,3 +273,56 @@ def try_handle_local_command(user_input: str, tools=None, cwd: str | None = None
         return handle_user_command(args)
 
     return None
+
+
+def format_cybernetics_status() -> str:
+    """Format cybernetic controller inventory and persisted state hints."""
+    from minicode.cybernetic_supervisor import CyberneticSupervisor, load_supervisor_report
+    from minicode.context_manager import load_context_state
+
+    controllers = [
+        ("ContextCyberneticsOrchestrator", "context pressure PID + prediction"),
+        ("CostControlLoop", "budget PID for tool-result persistence"),
+        ("VerificationController", "risk-adaptive verification planning"),
+        ("ToolSchedulerController", "error/latency-aware concurrency control"),
+        ("MemoryInjectionController", "context-aware memory injection"),
+        ("ModelSelectionController", "cost/latency/failure-aware model routing"),
+        ("ProgressController", "health/stall task progress control"),
+        ("CyberneticSupervisor", "global health and risk aggregation"),
+    ]
+
+    ctx = load_context_state()
+    snapshots = []
+    if ctx:
+        stats = ctx.get_stats()
+        usage = stats.usage_percentage / 100.0
+        snapshots.append(CyberneticSupervisor().snapshot_from_context({
+            "sensor": {"current_usage": usage},
+            "predictor": {"urgency": 0.0},
+        }))
+    persisted_report = load_supervisor_report()
+    report = persisted_report or CyberneticSupervisor().report(snapshots)
+
+    lines = [
+        "Cybernetic Control System",
+        "=" * 50,
+        f"overall_health: {report.overall_health:.2f}",
+        f"risk_level: {report.risk_level.value}",
+        f"source: {'latest agent-loop report' if persisted_report else 'current persisted context'}",
+        "",
+        "Controllers:",
+    ]
+    for name, desc in controllers:
+        lines.append(f"  - {name}: {desc}")
+    lines.extend([
+        "",
+        "Runtime aggregation:",
+        "  - pipeline outputs: progress_control + verification_plan + cybernetic_supervisor",
+        "  - agent loop logs: context + cost + tool scheduling supervisor report",
+    ])
+    if report.recommended_actions:
+        lines.append("")
+        lines.append("Current actions:")
+        for action in report.recommended_actions[:5]:
+            lines.append(f"  - {action}")
+    return "\n".join(lines)

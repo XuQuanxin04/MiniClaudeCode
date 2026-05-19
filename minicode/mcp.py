@@ -54,7 +54,7 @@ def _validate_mcp_command(command: str) -> None:
     
     # 不允许路径遍历字符
     if '..' in normalized or '~' in normalized:
-        raise RuntimeError(f"Invalid MCP command: contains path traversal characters")
+        raise RuntimeError("Invalid MCP command: contains path traversal characters")
     
     # 提取命令的基本名称
     base_command = Path(command).name.lower()

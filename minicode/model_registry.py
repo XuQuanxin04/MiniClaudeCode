@@ -14,9 +14,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any
 
-from minicode.types import AgentStep
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +51,155 @@ class ModelInfo:
     def __post_init__(self):
         if not self.display_name:
             self.display_name = self.name
+
+
+class ReasoningEffort(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+
+
+@dataclass
+class ModelSelectionSignal:
+    """Observed state for cybernetic model selection."""
+
+    task_complexity: str = "moderate"
+    budget_pressure: float = 0.0
+    latency_pressure: float = 0.0
+    recent_failures: int = 0
+    requires_tools: bool = True
+    requires_long_context: bool = False
+    current_model: str = ""
+
+
+@dataclass
+class ModelSelectionDecision:
+    """Controller output for model/routing recommendation."""
+
+    model: str
+    provider: Provider
+    reasoning_effort: ReasoningEffort
+    score: float
+    reasons: list[str] = field(default_factory=list)
+    fallback_model: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "provider": self.provider.value,
+            "reasoning_effort": self.reasoning_effort.value,
+            "score": round(self.score, 3),
+            "reasons": list(self.reasons),
+            "fallback_model": self.fallback_model,
+        }
+
+
+class ModelSelectionController:
+    """Risk/cost adaptive model recommendation controller."""
+
+    def decide(self, signal: ModelSelectionSignal) -> ModelSelectionDecision:
+        candidates = [
+            info for info in list_available_models()
+            if info.supports_tools or not signal.requires_tools
+        ]
+        if not candidates:
+            info = resolve_model_info(signal.current_model or "claude-sonnet-4-20250514")
+            return ModelSelectionDecision(
+                model=info.name,
+                provider=info.provider,
+                reasoning_effort=ReasoningEffort.MEDIUM,
+                score=0.0,
+                reasons=["no compatible candidates"],
+            )
+
+        reasons: list[str] = []
+        complexity = signal.task_complexity.lower()
+        target_power = {"simple": 0.25, "moderate": 0.55, "complex": 0.85}.get(complexity, 0.55)
+        if signal.recent_failures > 0:
+            target_power = min(1.0, target_power + 0.10 * signal.recent_failures)
+            reasons.append(f"recent failures: {signal.recent_failures}")
+        if signal.requires_long_context:
+            target_power = min(1.0, target_power + 0.10)
+            reasons.append("long context required")
+        if signal.budget_pressure >= 0.70:
+            target_power = max(0.20, target_power - 0.25)
+            reasons.append("high budget pressure")
+        elif signal.budget_pressure <= 0.20 and complexity == "complex":
+            target_power = min(1.0, target_power + 0.10)
+            reasons.append("budget allows stronger model")
+        if signal.latency_pressure >= 0.70:
+            target_power = max(0.20, target_power - 0.15)
+            reasons.append("high latency pressure")
+
+        scored: list[tuple[float, ModelInfo, list[str]]] = []
+        for info in candidates:
+            power = self._model_power(info)
+            cost = self._model_cost(info)
+            latency = self._latency_proxy(info)
+            context_fit = 1.0 if not signal.requires_long_context else min(1.0, info.context_window / 200_000)
+
+            score = 1.0 - abs(power - target_power)
+            score -= signal.budget_pressure * cost * 0.45
+            score -= signal.latency_pressure * latency * 0.30
+            score += context_fit * 0.15
+            if signal.current_model and info.name == resolve_model_info(signal.current_model).name:
+                score += 0.05
+            if signal.requires_tools and not info.supports_tools:
+                score -= 1.0
+
+            candidate_reasons = [
+                f"power={power:.2f}",
+                f"cost={cost:.2f}",
+                f"context={info.context_window // 1000}K",
+            ]
+            scored.append((score, info, candidate_reasons))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        best_score, best, candidate_reasons = scored[0]
+        fallback = scored[1][1].name if len(scored) > 1 else None
+        effort = self._reasoning_effort(target_power, signal)
+        return ModelSelectionDecision(
+            model=best.name,
+            provider=best.provider,
+            reasoning_effort=effort,
+            score=max(0.0, best_score),
+            reasons=reasons + candidate_reasons,
+            fallback_model=fallback,
+        )
+
+    def _model_power(self, info: ModelInfo) -> float:
+        name = info.name.lower()
+        if "opus" in name or name == "o1" or "gemini-2.5-pro" in name:
+            return 0.95
+        if "sonnet" in name or "gpt-4o" in name or "o3" in name or "r1" in name:
+            return 0.75
+        if "mini" in name or "haiku" in name or "flash" in name or "deepseek-chat" in name:
+            return 0.35
+        return 0.55
+
+    def _model_cost(self, info: ModelInfo) -> float:
+        blended = (info.pricing_input + info.pricing_output) / 2
+        return min(1.0, blended / 45.0)
+
+    def _latency_proxy(self, info: ModelInfo) -> float:
+        power = self._model_power(info)
+        return min(1.0, 0.25 + power * 0.65)
+
+    def _reasoning_effort(
+        self,
+        target_power: float,
+        signal: ModelSelectionSignal,
+    ) -> ReasoningEffort:
+        if signal.budget_pressure >= 0.80 or signal.latency_pressure >= 0.85:
+            return ReasoningEffort.LOW
+        if target_power >= 0.90:
+            return ReasoningEffort.XHIGH
+        if target_power >= 0.75:
+            return ReasoningEffort.HIGH
+        if target_power >= 0.45:
+            return ReasoningEffort.MEDIUM
+        return ReasoningEffort.LOW
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +614,16 @@ def format_model_status(model: str, runtime: dict | None = None) -> str:
     provider = detect_provider(model, runtime)
     info = resolve_model_info(model, provider)
     pconfig = build_provider_config(model, runtime)
+    recommendation = ModelSelectionController().decide(
+        ModelSelectionSignal(
+            task_complexity="moderate",
+            budget_pressure=float((runtime or {}).get("budgetPressure", 0.0) or 0.0),
+            latency_pressure=float((runtime or {}).get("latencyPressure", 0.0) or 0.0),
+            recent_failures=int((runtime or {}).get("recentFailures", 0) or 0),
+            requires_tools=True,
+            current_model=model,
+        )
+    )
 
     lines = [
         "Current Model",
@@ -478,5 +636,11 @@ def format_model_status(model: str, runtime: dict | None = None) -> str:
         f"  Tools:    {'Yes' if info.supports_tools else 'No'}",
         f"  Vision:   {'Yes' if info.supports_vision else 'No'}",
         f"  API Key:  {'*' * 8}{pconfig.api_key[-4:]}" if len(pconfig.api_key) > 4 else "  API Key:  not set",
+        "",
+        "Cybernetic Recommendation",
+        f"  Model:    {recommendation.model}",
+        f"  Effort:   {recommendation.reasoning_effort.value}",
+        f"  Score:    {recommendation.score:.2f}",
+        f"  Reasons:  {', '.join(recommendation.reasons[:4])}",
     ]
     return "\n".join(lines)

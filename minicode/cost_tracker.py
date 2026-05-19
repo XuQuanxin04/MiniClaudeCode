@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Any
+from decimal import Decimal
 
 # Precomputed Decimal constants for performance
 _DECIMAL_1M = Decimal("1000000")
