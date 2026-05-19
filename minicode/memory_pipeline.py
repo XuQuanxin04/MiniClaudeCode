@@ -106,6 +106,16 @@ class MemoryPipeline:
             try:
                 from minicode.vector_memory import VectorMemoryStore
                 self._vector_store = VectorMemoryStore()
+                if self._vector_store.enabled and self._memory:
+                    # Index existing memories
+                    all_entries = []
+                    from minicode.memory import MemoryScope
+                    for scope in MemoryScope:
+                        if scope in self._memory.memories:
+                            all_entries.extend(self._memory.memories[scope].entries)
+                    if all_entries:
+                        indexed = self._vector_store.index_entries(all_entries)
+                        logger.info("VectorMemoryStore: indexed %d existing entries", indexed)
             except Exception:
                 pass
 
@@ -157,6 +167,18 @@ class MemoryPipeline:
         entries = self._try_search_with_reformulation(
             task_description, active_domains, max_results,
         )
+
+        # 2b. Parallel vector search + RRF fusion (F1)
+        if self._vector_store and self._vector_store.enabled:
+            try:
+                vec_results = self._vector_store.search(
+                    task_description, top_k=max_results,
+                )
+                if vec_results:
+                    from minicode.vector_memory import merge_bm25_vector
+                    entries = merge_bm25_vector(entries, vec_results)
+            except Exception:
+                pass
 
         # 3. Score entries with value function (T1)
         if self._reranker and self._reranker.enabled and len(entries) > 3:
@@ -285,6 +307,33 @@ class MemoryPipeline:
             pass
 
         return None
+
+    # ── FEEDBACK: Close the quality loop (F2) ────────────────────────
+
+    def feedback(
+        self,
+        task_success: bool,
+        injected_memory_ids: list[str] | None = None,
+    ) -> None:
+        """Task outcome → memory utility. Closes the outermost learning loop.
+
+        Success → boost injected memories (positive reinforcement).
+        Failure → gentle decay (they may have misled the agent).
+        """
+        if not self._memory or not injected_memory_ids:
+            return
+
+        from minicode.memory import MemoryScope
+        for scope in MemoryScope:
+            if scope not in self._memory.memories:
+                continue
+            for entry in self._memory.memories[scope].entries:
+                if entry.id in injected_memory_ids:
+                    if task_success:
+                        entry.usage_count += 2
+                    else:
+                        entry.usage_count = max(0, entry.usage_count - 1)
+                    entry.last_accessed = time.time()
 
     # ── MAINTAIN: Background optimization ───────────────────────────
 

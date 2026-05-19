@@ -1481,18 +1481,53 @@ class MemoryManager:
         }
     
     def format_stats(self) -> str:
-        """Format memory stats for display."""
-        stats = self.get_stats()
-        lines = ["Memory System Status", "=" * 40, ""]
-        
-        for scope_name, scope_stats in stats.items():
-            lines.append(f"{scope_name.title()} Memory:")
-            lines.append(f"  Entries: {scope_stats['entries']}")
-            lines.append(f"  Size: {scope_stats['size_bytes'] / 1024:.1f} KB")
-            if scope_stats['categories']:
-                lines.append(f"  Categories: {', '.join(scope_stats['categories'][:5])}")
+        """Format memory stats for display with tier and domain breakdown."""
+        from collections import Counter
+
+        lines = ["Memory System Status", "=" * 50, ""]
+        tiers: Counter[str] = Counter()
+        domains: Counter[str] = Counter()
+        total_entries = 0
+        total_size = 0
+        insight_count = 0
+
+        for scope_name, scope_stats in self.get_stats().items():
+            lines.append(f"{scope_name.title()}: {scope_stats['entries']} entries, "
+                        f"{scope_stats['size_bytes'] / 1024:.1f} KB")
+            total_entries += scope_stats["entries"]
+            total_size += scope_stats["size_bytes"]
+
+            # Collect tier and domain stats
+            scope = MemoryScope(scope_name)
+            if scope in self.memories:
+                for e in self.memories[scope].entries:
+                    tiers[e.tier.value] += 1
+                    for d in e.domains:
+                        domains[d] += 1
+                    if e.category == "insight":
+                        insight_count += 1
+
+        lines.append("")
+        lines.append(f"Total: {total_entries} entries ({total_size / 1024:.1f} KB)")
+        lines.append("")
+
+        if tiers:
+            lines.append("Tier Distribution:")
+            for tier_name in ["working", "short_term", "long_term", "archival"]:
+                count = tiers.get(tier_name, 0)
+                bar = "#" * (count // max(1, total_entries // 20))
+                lines.append(f"  {tier_name:<12} {count:>4} {bar}")
             lines.append("")
-        
+
+        if domains:
+            lines.append("Domain Distribution:")
+            for domain, count in domains.most_common(6):
+                lines.append(f"  {domain:<15} {count:>3}")
+            lines.append("")
+
+        if insight_count:
+            lines.append(f"Curator Insights: {insight_count} synthesized")
+
         return "\n".join(lines)
     
     def clear_scope(self, scope: MemoryScope) -> None:
