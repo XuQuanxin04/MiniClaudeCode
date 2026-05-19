@@ -241,8 +241,8 @@ def _execute_single_tool(
             store.set_state(set_busy(tool_name))
         
         # Execute the tool with timeout protection
-        import concurrent.futures
-        TOOL_TIMEOUT = 120  # seconds
+        import concurrent.futures, os
+        TOOL_TIMEOUT = int(os.environ.get("MINICODE_TOOL_TIMEOUT", "120"))
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(
@@ -1010,7 +1010,7 @@ def run_agent_turn(
                 # Multiple calls — use ToolScheduler for intelligent partitioning
                 concurrent_calls, serial_calls = tool_scheduler.schedule_calls(calls, tools)
 
-                _results: list[tuple[dict, ToolResult]] = []
+                _results.clear()  # Reuse outer declaration
 
                 # Phase 1: Run all concurrent-safe tools in parallel
                 if concurrent_calls:

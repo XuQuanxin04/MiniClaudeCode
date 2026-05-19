@@ -146,6 +146,7 @@ class _RawModeContext:
     def __init__(self) -> None:
         self._old_settings: Any = None
         self._old_cp: int | None = None
+        self._old_sigwinch: Any = None
 
     def __enter__(self) -> _RawModeContext:
         if sys.platform == "win32":
@@ -162,10 +163,22 @@ class _RawModeContext:
                 pass
         else:
             import termios
+            import signal
 
             fd = sys.stdin.fileno()
             self._old_settings = termios.tcgetattr(fd)
             new = termios.tcgetattr(fd)
+
+            # Wire SIGWINCH to invalidate terminal size cache on resize
+            try:
+                import signal
+
+                def _on_resize(signum, frame):
+                    from minicode.tui.chrome import invalidate_terminal_size_cache
+                    invalidate_terminal_size_cache()
+                self._old_sigwinch = signal.signal(signal.SIGWINCH, _on_resize)
+            except (ImportError, AttributeError):
+                pass  # Windows or no SIGWINCH support
             # Input flags: disable CR→NL translation and XON/XOFF flow control,
             # strip high bit, and break signal generation.
             new[0] &= ~(
@@ -200,9 +213,15 @@ class _RawModeContext:
                 except Exception:
                     pass
         elif self._old_settings is not None:
-            import termios
+            import termios, signal
 
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_settings)
+            if getattr(self, '_old_sigwinch', None) is not None:
+                try:
+                    import signal
+                    signal.signal(signal.SIGWINCH, self._old_sigwinch)
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------
