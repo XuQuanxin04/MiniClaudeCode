@@ -185,7 +185,8 @@ class AnthropicModelAdapter:
         response = None
         for attempt in range(max_retries + 1):
             try:
-                response = urllib.request.urlopen(request, timeout=60)
+                timeout = int(os.environ.get("MINICODE_MODEL_TIMEOUT", "60"))
+                response = urllib.request.urlopen(request, timeout=timeout)
                 break
             except urllib.error.HTTPError as error:
                 response = error

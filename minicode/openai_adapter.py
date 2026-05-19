@@ -216,7 +216,8 @@ class OpenAIModelAdapter:
         response = None
         for attempt in range(max_retries + 1):
             try:
-                response = urllib.request.urlopen(request, timeout=120)  # noqa: S310
+                timeout = int(os.environ.get("MINICODE_MODEL_TIMEOUT", "120"))
+                response = urllib.request.urlopen(request, timeout=timeout)
                 break
             except urllib.error.HTTPError as error:
                 response = error

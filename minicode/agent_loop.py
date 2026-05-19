@@ -343,6 +343,7 @@ def _model_next(
     try:
         signature = inspect.signature(model.next)
     except (TypeError, ValueError):
+        logger.warning("_model_next: inspect.signature failed, falling back without store")
         return model.next(messages, on_stream_chunk=on_stream_chunk, store=store)
 
     supports_store = any(

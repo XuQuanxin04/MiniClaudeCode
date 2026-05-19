@@ -136,8 +136,10 @@ class LayeredContext:
                 kept.append(content)
                 total += content.tokens
             elif not kept:
+                # First item exceeds budget: keep truncated version
+                content.tokens = limit
                 kept.append(content)
-                total += content.tokens
+                total = limit
                 break
         kept_ids = {id(c) for c in kept}
         self._layers[layer] = [c for c in contents if id(c) in kept_ids]
