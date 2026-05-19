@@ -413,6 +413,11 @@ def delete_session(session_id: str) -> bool:
 
     try:
         session_path.unlink()
+        # Clean up orphaned delta files
+        delta_dir = _session_delta_dir(session_id)
+        if delta_dir.exists():
+            import shutil
+            shutil.rmtree(delta_dir, ignore_errors=True)
         index = _load_session_index()
         index.pop(session_id, None)
         _save_session_index(index)
