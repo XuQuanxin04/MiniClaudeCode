@@ -531,11 +531,12 @@ def run_agent_turn(
             if reflection_engine:
                 reflection_engine.memory = memory_mgr
             # 初始化 MemoryInjector，将控制论决策落地为实际记忆注入
-            # 同时创建 Reranker（LLM 策展，提高检索精度 ~40% -> ~8% 噪音）
+            # 同时创建 Reranker（使用真实 LLM 做记忆策展）
             memory_reranker = None
             try:
-                from minicode.memory_reranker import create_reranker
-                memory_reranker = create_reranker()
+                from minicode.memory_reranker import MemoryReranker
+                # Use the agent's model for reranking (lightweight prompt, ~500 tokens)
+                memory_reranker = MemoryReranker(model_adapter=model)
             except Exception:
                 pass
             memory_injector = MemoryInjector(
