@@ -296,6 +296,10 @@ _register(ModelInfo("deepseek/deepseek-r1", Provider.OPENROUTER,
 _register(ModelInfo("deepseek/deepseek-chat", Provider.OPENROUTER,
     context_window=128_000, max_output_tokens=8_192,
     pricing_input=0.14, pricing_output=0.28))
+_register(ModelInfo("deepseek-v4-pro[1m]", Provider.CUSTOM,
+    display_name="DeepSeek V4 Pro",
+    context_window=128_000, max_output_tokens=8_192,
+    pricing_input=0.10, pricing_output=0.40))
 _register(ModelInfo("qwen/qwen3-235b-a22b", Provider.OPENROUTER,
     context_window=128_000, max_output_tokens=8_192,
     pricing_input=0.22, pricing_output=0.88))
@@ -334,7 +338,15 @@ def detect_provider(model: str, runtime: dict | None = None) -> Provider:
             # Default to OpenRouter for vendor-prefixed models
             return Provider.OPENROUTER
 
-    # 2. OpenAI detection
+    # 2. DeepSeek direct API detection
+    if model_lower.startswith("deepseek") or "deepseek" in model_lower:
+        if os.environ.get("DEEPSEEK_API_KEY"):
+            return Provider.CUSTOM
+        # If registered as CUSTOM in BUILTIN_MODELS, use that
+        if model in BUILTIN_MODELS and BUILTIN_MODELS[model].provider == Provider.CUSTOM:
+            return Provider.CUSTOM
+
+    # 3. OpenAI detection
     openai_prefixes = ("gpt-4", "gpt-3.5", "o1-", "o3-", "chatgpt-")
     openai_exact = {"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o1-mini", "o3-mini"}
     if model_lower in openai_exact or any(model_lower.startswith(p) for p in openai_prefixes):
@@ -439,12 +451,16 @@ def build_provider_config(model: str, runtime: dict | None = None) -> ProviderCo
         )
 
     if provider == Provider.CUSTOM:
+        # Check for DeepSeek-specific env vars first
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
         base_url = (
             os.environ.get("CUSTOM_API_BASE_URL", "")
+            or (deepseek_key and "https://api.deepseek.com/v1" or "")
             or runtime.get("customBaseUrl", "")
         ).rstrip("/")
         api_key = (
             os.environ.get("CUSTOM_API_KEY", "")
+            or deepseek_key
             or os.environ.get("OPENAI_API_KEY", "")
             or runtime.get("customApiKey", "")
         )
