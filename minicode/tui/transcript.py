@@ -353,19 +353,54 @@ def render_transcript(
         end = total_lines
         start = max(0, end - ws)
         visible_lines = _render_visible_window(entries, start, end, revision)
-        return "\n".join(visible_lines)
+        body = "\n".join(visible_lines)
+        scrollbar = _render_scrollbar(offset, max_offset, len(visible_lines))
+        return _interleave_scrollbar(body, scrollbar)
 
     content_ws = max(1, ws - 1)
     end = total_lines - offset
     start = max(0, end - content_ws)
     visible_lines = _render_visible_window(entries, start, end, revision)
     body = "\n".join(visible_lines)
+    scrollbar = _render_scrollbar(offset, max_offset, len(visible_lines))
 
-    return (
+    indicator = (
         f"{body}\n"
         f"{t.subtle}  {ICON_DIVIDER * 2} scroll {offset}/{max_offset} "
         f"(PgUp/PgDn or scroll){ICON_DIVIDER * 2}{t.reset}"
     )
+    return _interleave_scrollbar(indicator, scrollbar)
+
+
+def _render_scrollbar(offset: int, max_offset: int, height: int) -> list[str]:
+    """Render a vertical scrollbar as a list of characters, one per line."""
+    if max_offset <= 0 or height < 3:
+        return [" "] * max(1, height)
+    # Thumb position (0 = top)
+    pos = int((offset / max_offset) * (height - 1))
+    bar = []
+    for i in range(height):
+        if i == pos:
+            bar.append("█")
+        elif i == 0 and offset > 0:
+            bar.append("▲")
+        elif i == height - 1 and offset < max_offset:
+            bar.append("▼")
+        else:
+            bar.append("░")
+    return bar
+
+
+def _interleave_scrollbar(body: str, scrollbar: list[str]) -> str:
+    """Append scrollbar characters to each line of body."""
+    lines = body.split("\n")
+    result = []
+    for i, line in enumerate(lines):
+        if i < len(scrollbar):
+            result.append(f"{line}{scrollbar[i]}")
+        else:
+            result.append(line)
+    return "\n".join(result)
 
 
 # ---------------------------------------------------------------------------
