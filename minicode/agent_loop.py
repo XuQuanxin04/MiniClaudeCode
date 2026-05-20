@@ -31,9 +31,7 @@ from minicode.decision_audit import get_auditor, DecisionOutcome
 # 工程控制论集成
 from minicode.cybernetic_orchestrator import CyberneticOrchestrator
 from minicode.cybernetic_supervisor import CyberneticSupervisor, save_supervisor_report
-from minicode.feedback_controller import FeedbackController
 from minicode.feedforward_controller import FeedforwardController
-from minicode.stability_monitor import StabilityMonitor
 
 # 高级控制论模块
 from minicode.adaptive_pid_tuner import AdaptivePIDTuner
@@ -421,12 +419,23 @@ def run_agent_turn(
         get_pipeline_engine()
         _register_tool_capabilities(tools)
 
-        # 初始化反馈控制器（负反馈 + 正反馈）
-        feedback_controller = FeedbackController()
-        cybernetic_supervisor = CyberneticSupervisor()
-        logger.info("Feedback controller initialized: negative + positive feedback loops")
-
-        # 智能路由：根据任务复杂度选择最优模型
+        # 初始化所有工程控制论控制器（通过 Orchestrator 统一管理）
+        orch = CyberneticOrchestrator()
+        orch.initialize(model, tools, runtime)
+        feedback_controller = orch.feedback
+        cybernetic_supervisor = orch.cyber_supervisor
+        stability_monitor = orch.stability
+        adaptive_pid_tuner = orch.adaptive_tuner
+        state_observer = orch.state_observer
+        decoupling_controller = orch.decoupling
+        predictive_controller = orch.predictive
+        progress_controller = orch.progress
+        memory_injection_ctrl = orch.memory_ctrl
+        model_selection_ctrl = orch.model_ctrl
+        smart_router = orch.smart_router
+        reflection_engine = orch.reflection
+        model_switcher = orch.model_switcher
+        logger.info("CyberneticOrchestrator: %d controllers initialized", 15)
         if smart_router and task:
             try:
                 current_model_id = model.model_id if hasattr(model, 'model_id') else ""
@@ -475,42 +484,6 @@ def run_agent_turn(
                     risk_assessment.estimated_failure_probability,
                     ", ".join(risk_assessment.identified_risks[:3]),
                 )
-
-        # 初始化稳定性监测器（系统观测器）
-        stability_monitor = StabilityMonitor(window_size=100)
-        logger.info("Stability monitor initialized: real-time health tracking")
-
-        # 初始化自适应PID调参器
-        adaptive_pid_tuner = AdaptivePIDTuner()
-        logger.info("Adaptive PID tuner initialized: self-tuning control")
-
-        # 初始化状态观测器（卡尔曼滤波）
-        state_observer = StateObserver()
-        logger.info("State observer initialized: Kalman filter-based estimation")
-
-        # 初始化进度控制器
-        progress_controller = ProgressController()
-
-        # 初始化记忆注入和模型选择控制器
-        memory_injection_ctrl = MemoryInjectionController()
-        model_selection_ctrl = ModelSelectionController()
-
-        # 初始化智能路由、自省和模型热切换 (Phase 3)
-        smart_router = SmartRouter()
-        reflection_engine = ReflectionEngine(memory_manager=None)
-        model_switcher = ModelSwitcher(
-            current_model=getattr(model, 'model_id', ''),
-            current_runtime=runtime or {},
-            current_tools=tools,
-        )
-
-        # 初始化多变量解耦控制器
-        decoupling_controller = DecouplingController()
-        logger.info("Decoupling controller initialized: multi-variable control")
-
-        # 初始化预测控制器
-        predictive_controller = PredictiveController()
-        logger.info("Predictive controller initialized: proactive control")
 
         # 模型选择控制器：根据任务特征推荐模型
         if model_selection_ctrl and task:
