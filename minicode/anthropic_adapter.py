@@ -137,6 +137,7 @@ class AnthropicModelAdapter:
         # Cache the serialized tool list — tools rarely change within a session
         self._cached_tools_json: list[dict[str, Any]] | None = None
         self._tools_cache_key: int = 0  # hash of tool list for invalidation
+        self._thinking_blocks: list[dict[str, Any]] = []  # Preserve thinking blocks for round-trip
 
     def _get_serialized_tools(self) -> list[dict[str, Any]]:
         """Get serialized tool list with caching."""
@@ -156,6 +157,18 @@ class AnthropicModelAdapter:
 
     def next(self, messages: list[dict[str, Any]], on_stream_chunk: Callable[[str], None] | None = None, store: Store[AppState] | None = None) -> AgentStep:
         system_message, converted_messages = _to_anthropic_messages(messages)
+
+        # Inject stored thinking blocks into the last assistant message
+        if self._thinking_blocks:
+            for i in range(len(converted_messages) - 1, -1, -1):
+                if converted_messages[i].get("role") == "assistant":
+                    existing = converted_messages[i].get("content", [])
+                    if isinstance(existing, list):
+                        converted_messages[i] = dict(converted_messages[i])
+                        converted_messages[i]["content"] = list(self._thinking_blocks) + existing
+                    break
+            self._thinking_blocks = []
+
         request_body = {
             "model": self.runtime["model"],
             "system": system_message,
@@ -251,6 +264,8 @@ class AnthropicModelAdapter:
                     text_parts.append(block["text"])
                 elif block_type == "tool_use" and isinstance(block.get("id"), str) and isinstance(block.get("name"), str):
                     tool_calls.append({"id": block["id"], "toolName": block["name"], "input": block.get("input")})
+                elif block_type == "thinking":
+                    self._thinking_blocks.append(block)  # Preserve for round-trip
                 else:
                     ignored_block_types.append(str(block_type))
     
@@ -277,6 +292,7 @@ class AnthropicModelAdapter:
         block_types = []
         ignored_block_types = []
         active_tool_call = None
+        active_thinking_block = None
         stop_reason = None
         
         # Streaming cost tracking
@@ -315,6 +331,8 @@ class AnthropicModelAdapter:
                         "name": cb.get("name"),
                         "input_json": ""
                     }
+                elif c_type == "thinking":
+                    active_thinking_block = {"type": "thinking", "thinking": ""}
             elif etype == "content_block_delta":
                 delta = event.get("delta", {})
                 d_type = delta.get("type")
@@ -325,6 +343,12 @@ class AnthropicModelAdapter:
                 elif d_type == "input_json_delta":
                     if active_tool_call:
                         active_tool_call["input_json"] += delta.get("partial_json", "")
+                elif d_type == "thinking_delta":
+                    if active_thinking_block:
+                        active_thinking_block["thinking"] += delta.get("thinking", "")
+                elif d_type == "signature_delta":
+                    if active_thinking_block:
+                        active_thinking_block["signature"] = active_thinking_block.get("signature", "") + delta.get("signature", "")
             elif etype == "content_block_stop":
                 if active_tool_call:
                     try:
@@ -337,6 +361,9 @@ class AnthropicModelAdapter:
                         "input": parsed_input
                     })
                     active_tool_call = None
+                if active_thinking_block:
+                    self._thinking_blocks.append(active_thinking_block)
+                    active_thinking_block = None
             elif etype == "message_delta":
                 delta = event.get("delta", {})
                 if "stop_reason" in delta:

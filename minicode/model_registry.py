@@ -296,7 +296,7 @@ _register(ModelInfo("deepseek/deepseek-r1", Provider.OPENROUTER,
 _register(ModelInfo("deepseek/deepseek-chat", Provider.OPENROUTER,
     context_window=128_000, max_output_tokens=8_192,
     pricing_input=0.14, pricing_output=0.28))
-_register(ModelInfo("deepseek-v4-pro[1m]", Provider.CUSTOM,
+_register(ModelInfo("deepseek-v4-pro[1m]", Provider.ANTHROPIC,
     display_name="DeepSeek V4 Pro",
     context_window=128_000, max_output_tokens=8_192,
     pricing_input=0.10, pricing_output=0.40))
@@ -562,7 +562,16 @@ def create_model_adapter(
 
     # Anthropic
     from minicode.anthropic_adapter import AnthropicModelAdapter
-    return AnthropicModelAdapter(runtime or {}, tools)
+    enriched = dict(runtime or {})
+    if "model" not in enriched:
+        enriched["model"] = model
+    if "baseUrl" not in enriched:
+        enriched["baseUrl"] = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    if "authToken" not in enriched and "apiKey" not in enriched:
+        token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+        if token:
+            enriched["authToken"] = token
+    return AnthropicModelAdapter(enriched, tools)
 
 
 # ---------------------------------------------------------------------------
