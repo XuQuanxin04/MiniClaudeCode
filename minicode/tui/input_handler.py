@@ -496,11 +496,15 @@ def _handle_input(
         rerender()
 
     def on_tool_result(tool_name: str, output: str, is_error: bool) -> None:
-        # 计算并显示工具执行时间
+        # Track tool execution time
+        elapsed_note = ""
         if state.tool_start_time is not None:
             elapsed_secs = time.monotonic() - state.tool_start_time
-            if elapsed_secs > 1:
-                pass
+            if elapsed_secs > 0.5:
+                if elapsed_secs < 60:
+                    elapsed_note = f"[{elapsed_secs:.1f}s] "
+                else:
+                    elapsed_note = f"[{elapsed_secs/60:.1f}m] "
         
         pending = pending_tool_entries.get(tool_name, [])
         entry_id = pending.pop(0) if pending else None
@@ -543,7 +547,7 @@ def _handle_input(
                 })
                 
                 # 错误恢复引导
-                display_output = output
+                display_output = elapsed_note + output
                 if is_error:
                     suggestions = []
                     output_lower = output.lower()

@@ -278,6 +278,7 @@ def render_markdownish(input_text: str) -> str:
     lines = input_text.split("\n")
     in_code_block = False
     code_lang = ""
+    code_line_no = 0
     result_lines: list[str] = []
 
     for line in lines:
@@ -285,6 +286,7 @@ def render_markdownish(input_text: str) -> str:
         if line.startswith("```"):
             if not in_code_block:
                 in_code_block = True
+                code_line_no = 0
                 code_lang = line[3:].strip()
                 if code_lang:
                     result_lines.append(f"{CODE_BG}{SUBTLE} {code_lang} {RESET}")
@@ -296,7 +298,9 @@ def render_markdownish(input_text: str) -> str:
             continue
 
         if in_code_block:
-            result_lines.append(_highlight_code(line, code_lang))
+            code_line_no += 1
+            num = f"{SUBTLE}{code_line_no:>3} {RESET}"
+            result_lines.append(f"{num}{_highlight_code(line, code_lang)}")
             continue
 
         trimmed_line = line.strip()

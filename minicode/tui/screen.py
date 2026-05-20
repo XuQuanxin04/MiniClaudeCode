@@ -20,6 +20,8 @@ DISABLE_MOUSE_TRACKING = "\u001b[?1006l\u001b[?1003l\u001b[?1000l"
 ENABLE_BRACKETED_PASTE  = "[?2004h"
 DISABLE_BRACKETED_PASTE = "[?2004l"
 ENABLE_FOCUS_TRACKING  = "[?1004h"
+ENABLE_SYNC_OUTPUT  = "[?2026h"
+DISABLE_SYNC_OUTPUT = "[?2026l"
 DISABLE_FOCUS_TRACKING = "[?1004l"
 # Terminal types that do not support alternate screen or mouse tracking.
 _DUMB_TERMS = frozenset({"dumb", "linux", ""})
@@ -110,14 +112,14 @@ def enter_alternate_screen() -> None:
         # Dumb terminals (e.g. 'linux' console, 'dumb', piped output)
         # don't support alternate screen or mouse tracking.
         return
-    sys.stdout.write(DISABLE_MOUSE_TRACKING + ENTER_ALT_SCREEN + ERASE_SCREEN_AND_HOME + ENABLE_MOUSE_TRACKING + ENABLE_BRACKETED_PASTE + ENABLE_FOCUS_TRACKING)
+    sys.stdout.write(DISABLE_MOUSE_TRACKING + ENTER_ALT_SCREEN + ERASE_SCREEN_AND_HOME + ENABLE_MOUSE_TRACKING + ENABLE_BRACKETED_PASTE + ENABLE_FOCUS_TRACKING + ENABLE_SYNC_OUTPUT)
     sys.stdout.flush()
 
 
 def exit_alternate_screen() -> None:
     if _is_dumb_terminal():
         return
-    sys.stdout.write(DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN + DISABLE_BRACKETED_PASTE + DISABLE_FOCUS_TRACKING)
+    sys.stdout.write(DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN + DISABLE_BRACKETED_PASTE + ENABLE_SYNC_OUTPUT + DISABLE_FOCUS_TRACKING)
     sys.stdout.flush()
 
 
