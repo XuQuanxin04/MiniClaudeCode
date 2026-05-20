@@ -229,6 +229,11 @@ def _handle_normal_mode_key(
         rerender()
         return True
 
+    # Focus events: re-render on focus regain
+    if event.name == "focus_in":
+        rerender()
+        return True
+
     # Ctrl+Home/Ctrl+End: jump to transcript top/bottom
     if event.name == "home" and event.ctrl:
         from minicode.tui.navigation import _get_max_transcript_scroll_offset

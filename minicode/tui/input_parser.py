@@ -183,6 +183,16 @@ def parse_input_chunk(chunk: str) -> ParseResult:
 
         # Escape sequence
         if char == '\x1b':
+            # Focus in/out: \x1b[I / \x1b[O
+            if chunk[i:i+3] == '\x1b[I':
+                events.append(KeyEvent(name='focus_in', ctrl=False, meta=False))
+                i += 3
+                continue
+            if chunk[i:i+3] == '\x1b[O':
+                events.append(KeyEvent(name='focus_out', ctrl=False, meta=False))
+                i += 3
+                continue
+
             # Bracketed paste start: \x1b[200~
             if chunk[i:i+6] == '\x1b[200~' and not maybe_need_more_for_escape_sequence(chunk[i+6:]):
                 i += 6
