@@ -1277,19 +1277,27 @@ def run_agent_turn(
             # 记忆质量反馈：任务成功→注入的记忆 usage_count+1
             if memory_injector and hasattr(memory_injector, '_cached_result'):
                 try:
+                    from minicode.memory import MemoryScope
                     for mem in memory_injector._cached_result:
-                        if hasattr(mem, 'id') and memory_mgr:
-                            for scope_name in ['project', 'local', 'user']:
-                                try:
-                                    scope = MemoryScope(scope_name)
-                                    if scope in memory_mgr.memories:
-                                        entry = memory_mgr.memories[scope]._id_index.get(mem.id)
-                                        if entry:
-                                            entry.usage_count += (2 if tool_error_count == 0 else -1)
-                                            entry.last_accessed = time.time()
-                                            break
-                                except (ValueError, KeyError):
-                                    continue
+                        if not hasattr(mem, 'id'):
+                            continue
+                        try:
+                            _mgr = memory_mgr
+                        except NameError:
+                            continue
+                        for scope_name in ['project', 'local', 'user']:
+                            try:
+                                scope = MemoryScope(scope_name)
+                                if scope in _mgr.memories:
+                                    entry = _mgr.memories[scope]._id_index.get(mem.id)
+                                    if entry:
+                                        entry.usage_count += (2 if tool_error_count == 0 else -1)
+                                        entry.last_accessed = time.time()
+                                        break
+                                        entry.last_accessed = time.time()
+                                        break
+                            except (ValueError, KeyError):
+                                continue
                 except Exception:
                     pass
 
