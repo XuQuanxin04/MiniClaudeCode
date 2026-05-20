@@ -281,10 +281,15 @@ def _handle_input(
 ) -> bool:
     """Returns True if /exit was typed."""
     if state.is_busy:
+        # Animated spinner during tool execution
+        import itertools, time
+        spinners = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+        tick = int(time.monotonic() * 8) % len(spinners)
+        spin = spinners[tick]
         state.status = (
-            f"Running {state.active_tool}..."
+            f"{spin} {state.active_tool}..."
             if state.active_tool
-            else "Current turn is still running..."
+            else f"{spin} Running..."
         )
         return False
 
