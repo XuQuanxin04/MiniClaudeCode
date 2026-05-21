@@ -1,54 +1,74 @@
 # MiniCode Python
 
-MiniCode Python is the Python implementation in the MiniCode family. It is
-developed in this repository and linked from the main MiniCode repository:
+<p align="center">
+  <strong>A self-regulating Python coding agent for local development.</strong>
+</p>
 
-- Main MiniCode repository: [LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode)
-- Python repository: [QUSETIONS/MiniCode-Python](https://github.com/QUSETIONS/MiniCode-Python)
-- Rust repository: [harkerhand/MiniCode-rs](https://github.com/harkerhand/MiniCode-rs/tree/master)
-- Java repository: [hobbescalvin414-tech/minicode4j](https://github.com/hobbescalvin414-tech/minicode4j/tree/feat/default-ts-ui)
+<p align="center">
+  <a href="./README.zh-CN.md">简体中文</a>
+  ·
+  <a href="https://github.com/LiuMengxuan04/MiniCode">MiniCode Main Repo</a>
+  ·
+  <a href="https://github.com/QUSETIONS/MiniCode-Python">Python Repo</a>
+</p>
 
-This Python version focuses on a local terminal coding agent with an explicit
-control layer around the model loop. Instead of treating context pressure, tool
-failures, noisy memory, and cost drift as prompt-only problems, the agent
-measures them every turn and feeds those signals back into runtime decisions.
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-738%20passed-brightgreen?style=flat-square">
+  <img alt="Package" src="https://img.shields.io/badge/package-minicode--py-555?style=flat-square">
+</p>
 
-The current repository version is centered on the root package configured in
-`pyproject.toml`:
+MiniCode Python is the Python implementation in the MiniCode family. The main
+project is [LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode);
+this repository explores a Python-first agent runtime with cybernetic control,
+adaptive memory, and a testable local tool loop.
 
-- active package: `minicode/`
-- active tests: `tests/`
-- active console entrypoint: `minicode-py = minicode.main:main`
-- compatibility/staging mirror: `py-src/minicode/`
+Instead of treating context pressure, tool failures, memory noise, and cost
+drift as prompt-only problems, MiniCode Python measures them during execution
+and feeds those signals back into runtime decisions.
 
-The README describes the active root package. The `py-src/` tree is kept aligned
-for reference and migration work, but the installed package and test suite use
-`minicode/`.
+## Why It Exists
 
-## What Changed
+Most coding agents are model wrappers: prompt in, tool calls out, hope the loop
+stays healthy. MiniCode Python is built around a different idea:
 
-This version turns MiniCode from a mostly linear agent loop into a closed-loop
-agent runtime:
+> a coding agent should observe itself while it works, then adjust its own
+> context, memory, verification, concurrency, and recovery behavior.
 
-```text
-user task
-   |
-   v
-agent loop -----> tools / files / terminal
-   |
-   v
-sensors: context, cost, tool errors, progress, memory quality
-   |
-   v
-controllers: PID, Kalman state observer, prediction, self-healing, routing
-   |
-   v
-actions: compact context, change budget, cap concurrency, inject memory,
-         route models, record reflection, recover from faults
+That makes this repository useful as:
+
+- a local coding-agent implementation you can inspect end to end;
+- a Python research bed for agent control, memory, and verification loops;
+- a companion implementation to the TypeScript MiniCode main repo;
+- a practical place to test ideas before they become larger platform features.
+
+## Highlights
+
+| Area | What MiniCode Python Adds |
+| --- | --- |
+| Runtime control | `CyberneticOrchestrator` coordinates context, cost, feedback, progress, memory, and recovery controllers. |
+| Context management | PID-style context pressure handling, compaction, budget adjustment, and predictive guards. |
+| Memory | Domain-aware retrieval, optional LLM reranking, prompt injection, reflection write-back, and maintenance. |
+| Tool loop | Local file/search/edit/command tools with scheduler-aware execution and error nudges. |
+| Recovery | Self-healing paths for context overflow, tool failures, oscillation, and resource pressure. |
+| Verification | Focused unit, integration, stress, and cybernetics tests across the active root package. |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    User["User task"] --> Loop["agent_loop.py"]
+    Loop --> Tools["Local tools<br/>files, search, edit, shell"]
+    Tools --> Loop
+
+    Loop --> Sensors["Sensors<br/>context, cost, errors, progress"]
+    Sensors --> Orchestrator["CyberneticOrchestrator"]
+    Orchestrator --> Control["Controllers<br/>PID, Kalman, prediction,<br/>memory, model, progress"]
+    Control --> Actions["Runtime actions<br/>compact, cap concurrency,<br/>adjust budget, inject memory,<br/>recover, reflect"]
+    Actions --> Loop
 ```
 
-The important engineering result is not just that these controllers exist. The
-main agent loop now calls the unified `CyberneticOrchestrator` lifecycle:
+The main loop now drives the orchestrator lifecycle directly:
 
 - `wire_memory()`
 - `wire_healing()`
@@ -57,64 +77,27 @@ main agent loop now calls the unified `CyberneticOrchestrator` lifecycle:
 - `step_end()`
 - `reflect_on_task()`
 
-That keeps controller initialization, memory injection, per-step observation,
+This keeps controller initialization, memory injection, per-step observation,
 feedback, self-healing, and post-task reflection tied to the same runtime
 surface.
 
-## Core Capabilities
+## Repository Status
 
-### Cybernetic Control
+The active package is the root package configured in `pyproject.toml`.
 
-MiniCode uses a multi-controller runtime:
+| Path | Role |
+| --- | --- |
+| `minicode/` | Canonical Python package used by install and tests. |
+| `tests/` | Active test suite. |
+| `py-src/minicode/` | Compatibility/staging mirror kept aligned for migration work. |
+| `docs/OPTIMIZATION_SUMMARY.md` | Full optimization and integration record. |
+| `docs/memory_theory.md` | Memory/control theory notes. |
 
-- `FeedbackController` produces control signals for compaction, concurrency,
-  step limits, token budget, model-level hints, and memory persistence.
-- `ContextCyberneticsOrchestrator` runs context sensing, PID control,
-  prediction, threshold adaptation, and compaction.
-- `AdaptivePIDTuner` retunes PID parameters during longer runs.
-- `StateObserver` estimates hidden runtime state with Kalman filters.
-- `PredictiveController` raises proactive actions before pressure becomes a
-  hard failure.
-- `SelfHealingEngine` detects recoverable faults and delegates recovery.
-- `CostControlLoop` adjusts token-budget behavior from spend signals.
-- `ProgressController` detects stalled or unhealthy task progress.
-- `CyberneticSupervisor` aggregates controller state into a single health view.
+The main TypeScript repository may include this project as
+`external/MiniCode-Python`, but this Python package is installed and verified
+from this repository root.
 
-### Memory Pipeline
-
-Memory is handled as an adaptive pipeline rather than raw keyword search:
-
-```text
-task + files
-  -> DomainClassifier
-  -> BM25 / indexed retrieval
-  -> optional vector fusion
-  -> LLM reranking
-  -> memory injection
-  -> reflection write-back
-  -> maintenance / decay / conflict handling
-```
-
-The active facade is `MemoryPipeline`, wired through `CyberneticOrchestrator`.
-It supports project memory retrieval, prompt injection, task reflection, and
-background maintenance from one interface.
-
-### Agent Loop Integration
-
-The main loop in `minicode/agent_loop.py` now applies controller output to live
-runtime knobs:
-
-- `limit_max_steps` can reduce the remaining loop budget.
-- `adjust_token_budget` changes the compactor tool-result budget.
-- `reduce_parallelism` caps concurrent tool workers.
-- `adjust_concurrency` updates the scheduler worker cap.
-- `suggest_memory_persistence` flushes working memory.
-- model upgrade/downgrade hints are surfaced to the model switcher layer.
-
-The goal is conservative autonomy: controllers can intervene in measurable
-runtime behavior, but the agent still remains inspectable and testable.
-
-## Install
+## Quick Start
 
 ```bash
 git clone https://github.com/QUSETIONS/MiniCode-Python.git
@@ -128,16 +111,13 @@ Run the CLI:
 minicode-py
 ```
 
-Or run directly:
+Or run the module directly:
 
 ```bash
 python -m minicode.main
 ```
 
-For local smoke tests without a real model provider, use the mock model paths
-covered by the test suite.
-
-## Verify
+## Verification
 
 The current root package was verified with:
 
@@ -152,58 +132,43 @@ Latest local result:
 738 passed, 2 skipped, 3 warnings
 ```
 
-The remaining warnings are unregistered `pytest.mark.benchmark` markers in the
-memory benchmark tests. They do not indicate failing behavior.
+The warnings are unregistered `pytest.mark.benchmark` markers in benchmark
+tests. They do not indicate failing behavior.
 
-## Repository Map
+## Core Modules
 
-```text
-minicode/
-  agent_loop.py                 main agent runtime
-  cybernetic_orchestrator.py    controller lifecycle facade
-  context_cybernetics.py        context PID and compaction loop
-  feedback_controller.py        outer-loop control signals
-  self_healing_engine.py        fault detection and recovery
-  memory_pipeline.py            unified memory facade
-  memory_reranker.py            LLM-backed memory curation
-  domain_classifier.py          task/file domain inference
-  model_registry.py             model selection controller
-  progress_controller.py        task health and stall detection
+| Module | Purpose |
+| --- | --- |
+| `minicode/agent_loop.py` | Main model/tool loop and runtime control integration. |
+| `minicode/cybernetic_orchestrator.py` | Facade for controller lifecycle hooks. |
+| `minicode/context_cybernetics.py` | Context sensing, PID control, and compaction loop. |
+| `minicode/feedback_controller.py` | Outer-loop system-state to control-signal mapping. |
+| `minicode/self_healing_engine.py` | Fault detection and recovery delegation. |
+| `minicode/memory_pipeline.py` | Unified memory read/inject/write/maintain facade. |
+| `minicode/memory_reranker.py` | LLM-backed memory curation. |
+| `minicode/domain_classifier.py` | Task and file-domain inference. |
+| `minicode/model_registry.py` | Model selection controller. |
+| `minicode/progress_controller.py` | Task health and stall detection. |
 
-tests/
-  test_agent_flow.py            end-to-end agent loop coverage
-  test_cybernetics_*.py         control-stack tests
-  test_memory_*.py              memory retrieval/injection tests
+## MiniCode Family
 
-py-src/
-  minicode/                     staging mirror kept aligned with root package
+| Version | Repository | Focus |
+| --- | --- | --- |
+| TypeScript | [LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode) | Mainline terminal agent, TUI, MCP, skills, sessions, context controls. |
+| Python | [QUSETIONS/MiniCode-Python](https://github.com/QUSETIONS/MiniCode-Python) | Cybernetic Python runtime, memory pipeline, verification-oriented experiments. |
+| Rust | [harkerhand/MiniCode-rs](https://github.com/harkerhand/MiniCode-rs/tree/master) | Rust implementation and systems-side experimentation. |
+| Java | [hobbescalvin414-tech/minicode4j](https://github.com/hobbescalvin414-tech/minicode4j/tree/feat/default-ts-ui) | Java implementation with a TypeScript-style UI direction. |
 
-docs/
-  OPTIMIZATION_SUMMARY.md       full optimization record
-  memory_theory.md              memory/control theory notes
-```
+## Documentation
 
-## Version Alignment
+- [Optimization Summary](./docs/OPTIMIZATION_SUMMARY.md)
+- [Memory Theory](./docs/memory_theory.md)
+- [Main MiniCode Repository](https://github.com/LiuMengxuan04/MiniCode)
 
-This branch is the active GitHub repository version for
-`QUSETIONS/MiniCode-Python`. The root package (`minicode/`) is the canonical
-runtime used by installation and tests. `py-src/minicode/` is retained as a
-secondary source tree for compatibility with earlier project layout, and obvious
-behavioral fixes are mirrored there when needed.
+## Design Principles
 
-The main TypeScript repository can include this repository as
-`external/MiniCode-Python`, but the Python package itself is installed and tested
-from this repository root.
-
-## Design Notes
-
-MiniCode is intentionally small enough to inspect, but the runtime is no longer
-a bare model wrapper. The design direction is:
-
-- observe the agent while it works;
-- convert observations into structured control signals;
-- apply only bounded runtime actions;
-- preserve logs, tests, and explicit artifacts so claims can be checked.
-
-For the detailed optimization history, see
-[`docs/OPTIMIZATION_SUMMARY.md`](docs/OPTIMIZATION_SUMMARY.md).
+- Keep the agent loop inspectable.
+- Prefer measured runtime signals over hidden prompt magic.
+- Apply bounded actions: compact, cap, adjust, recover, reflect.
+- Treat verification and evidence as part of the agent runtime.
+- Keep the Python implementation useful as both software and research scaffold.
