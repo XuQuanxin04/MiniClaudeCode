@@ -1,7 +1,15 @@
 # MiniCode Python
 
-MiniCode Python is a local terminal coding agent with an explicit control
-layer around the model loop. Instead of treating context pressure, tool
+MiniCode Python is the Python implementation in the MiniCode family. It is
+developed in this repository and linked from the main MiniCode repository:
+
+- Main MiniCode repository: [LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode)
+- Python repository: [QUSETIONS/MiniCode-Python](https://github.com/QUSETIONS/MiniCode-Python)
+- Rust repository: [harkerhand/MiniCode-rs](https://github.com/harkerhand/MiniCode-rs/tree/master)
+- Java repository: [hobbescalvin414-tech/minicode4j](https://github.com/hobbescalvin414-tech/minicode4j/tree/feat/default-ts-ui)
+
+This Python version focuses on a local terminal coding agent with an explicit
+control layer around the model loop. Instead of treating context pressure, tool
 failures, noisy memory, and cost drift as prompt-only problems, the agent
 measures them every turn and feeds those signals back into runtime decisions.
 
@@ -12,7 +20,6 @@ The current repository version is centered on the root package configured in
 - active tests: `tests/`
 - active console entrypoint: `minicode-py = minicode.main:main`
 - compatibility/staging mirror: `py-src/minicode/`
-- local upstream/reference checkout: `MiniCode-fork/`
 
 The README describes the active root package. The `py-src/` tree is kept aligned
 for reference and migration work, but the installed package and test suite use
@@ -184,9 +191,9 @@ runtime used by installation and tests. `py-src/minicode/` is retained as a
 secondary source tree for compatibility with earlier project layout, and obvious
 behavioral fixes are mirrored there when needed.
 
-`MiniCode-fork/` is present as a local reference checkout to the broader
-MiniCode lineage. It is not the active package path for this repository because
-`pyproject.toml` installs from the repository root.
+The main TypeScript repository can include this repository as
+`external/MiniCode-Python`, but the Python package itself is installed and tested
+from this repository root.
 
 ## Design Notes
 
@@ -200,4 +207,3 @@ a bare model wrapper. The design direction is:
 
 For the detailed optimization history, see
 [`docs/OPTIMIZATION_SUMMARY.md`](docs/OPTIMIZATION_SUMMARY.md).
-
