@@ -35,6 +35,7 @@ def run_headless(prompt: str | None = None) -> str:
     from minicode.memory import MemoryManager
     from minicode.model_registry import create_model_adapter
     from minicode.permissions import PermissionManager
+    from minicode.auto_mode import PermissionMode
     from minicode.prompt import build_system_prompt
     from minicode.tools import create_default_tool_registry
     from minicode.tooling import ToolContext
@@ -66,7 +67,10 @@ def run_headless(prompt: str | None = None) -> str:
 
     # Initialize components
     tools = create_default_tool_registry(cwd, runtime=runtime)
-    permissions = PermissionManager(cwd, prompt=None)
+    permission_mode = None
+    if os.environ.get("MINI_CODE_PERMISSION_MODE", "").strip().lower() == "bypass":
+        permission_mode = PermissionMode.BYPASS
+    permissions = PermissionManager(cwd, prompt=None, auto_mode=permission_mode)
     memory_mgr = MemoryManager(project_root=Path(cwd))
 
     model = create_model_adapter(
@@ -92,6 +96,13 @@ def run_headless(prompt: str | None = None) -> str:
     ]
 
     logger.info("Headless run: %s", prompt[:80])
+    raw_max_steps = os.environ.get("MINI_CODE_MAX_STEPS", "").strip()
+    max_steps = 50
+    if raw_max_steps:
+        try:
+            max_steps = max(1, int(raw_max_steps))
+        except ValueError:
+            max_steps = 50
 
     try:
         result_messages = run_agent_turn(
@@ -100,6 +111,7 @@ def run_headless(prompt: str | None = None) -> str:
             messages=messages,
             cwd=cwd,
             permissions=permissions,
+            max_steps=max_steps,
         )
 
         # Extract last assistant message
@@ -121,6 +133,10 @@ def run_headless(prompt: str | None = None) -> str:
 
 def main() -> None:
     """CLI entry point for headless mode."""
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except AttributeError:
+        pass
     # Get prompt from command line args or stdin
     prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
     response = run_headless(prompt)

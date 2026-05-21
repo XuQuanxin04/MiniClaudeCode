@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import difflib
-import os
 from pathlib import Path
 from typing import Any
 from minicode.tooling import ToolDefinition, ToolResult

@@ -7,9 +7,9 @@ auto-compaction to prevent context overflow in long conversations.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from minicode.config import MINI_CODE_DIR
@@ -66,7 +66,6 @@ SYSTEM_PROMPT_RESERVED = 1
 # ---------------------------------------------------------------------------
 
 # 预编译的正则表达式用于快速 CJK 字符检测
-import re
 _CJK_PATTERN = re.compile(r'[\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF]')
 
 # LRU 缓存：token 估算被频繁调用（每条消息、每次上下文检查），
@@ -634,7 +633,7 @@ class ContextManager:
                 call_msg = msg
                 result_msg = filtered[i + 1]
                 tool_name = call_msg.get("toolName", "unknown")
-                result_content = result_msg.get("content", "")
+                result_msg.get("content", "")
                 is_error = result_msg.get("isError", False)
                 
                 # Build a compact summary preserving the key information

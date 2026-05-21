@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 from minicode.tooling import ToolDefinition, ToolResult
 
 
@@ -10,7 +9,7 @@ def _validate(input_data: dict) -> dict:
     if not isinstance(action, str) or not action:
         raise ValueError("action is required")
     if action not in ("status", "diff", "log", "commit", "review"):
-        raise ValueError(f"action must be one of: status, diff, log, commit, review")
+        raise ValueError("action must be one of: status, diff, log, commit, review")
     if action == "commit":
         message = input_data.get("message")
         if not isinstance(message, str) or not message.strip():

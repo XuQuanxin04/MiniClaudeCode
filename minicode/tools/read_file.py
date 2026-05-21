@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 import time
-from functools import lru_cache
 from pathlib import Path
 
 from minicode.tooling import ToolDefinition, ToolResult
@@ -42,8 +40,7 @@ def _get_cached_file_content(target: Path) -> str:
         _file_cache[cache_key] = (content, time.monotonic())
         return content
     except OSError:
-        # 如果文件不存在或无法访问，直接读取
-        return target.read_text(encoding="utf-8")
+        return ""
 
 
 def _validate(input_data: dict) -> dict:

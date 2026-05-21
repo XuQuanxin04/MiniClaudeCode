@@ -15,9 +15,8 @@ Permission modes:
 
 from __future__ import annotations
 
-import functools
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -260,7 +259,7 @@ class AutoModeChecker:
             level=RiskLevel.LOW,
             tool_name="run_command",
             action="approve",
-            reason=f"Auto mode: command appears safe",
+            reason="Auto mode: command appears safe",
         )
     
     def _assess_file_edit(
@@ -295,7 +294,7 @@ class AutoModeChecker:
             level=RiskLevel.MEDIUM,
             tool_name=tool_name,
             action="prompt",
-            reason=f"Auto mode: file modification requires approval",
+            reason="Auto mode: file modification requires approval",
         )
     
     # -----------------------------------------------------------------------
@@ -369,7 +368,6 @@ class ModeState:
     
     def record_decision(self, action: str) -> None:
         """Record a permission decision."""
-        import time
         if action == "approve":
             self.auto_approve_count += 1
         elif action == "prompt":

@@ -10,7 +10,7 @@ from typing import Any, Callable, Literal
 from minicode.config import MINI_CODE_PERMISSIONS_PATH
 
 # Auto mode integration
-from minicode.auto_mode import AutoModeChecker, PermissionMode, RiskLevel, get_checker, get_mode_state
+from minicode.auto_mode import AutoModeChecker, PermissionMode, get_mode_state
 
 # 权限决策类型 — 对齐 TS 版 PermissionDecision
 PermissionDecision = Literal[

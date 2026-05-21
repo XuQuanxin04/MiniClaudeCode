@@ -216,13 +216,16 @@ class OpenAIModelAdapter:
         response = None
         for attempt in range(max_retries + 1):
             try:
-                response = urllib.request.urlopen(request, timeout=120)  # noqa: S310
+                timeout = int(os.environ.get("MINICODE_MODEL_TIMEOUT", "120"))
+                response = urllib.request.urlopen(request, timeout=timeout)
                 break
             except urllib.error.HTTPError as error:
                 response = error
                 if error.code not in RETRYABLE_STATUS or attempt >= max_retries:
                     break
-                wait = calculate_backoff(attempt)
+                from minicode.api_retry import classify_error
+                category = classify_error(error)
+                wait = calculate_backoff(attempt, category=category)
                 time.sleep(wait)
             except urllib.error.URLError:
                 if attempt >= max_retries:

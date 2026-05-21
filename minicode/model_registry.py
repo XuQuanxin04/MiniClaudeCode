@@ -14,9 +14,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any
 
-from minicode.types import AgentStep
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +51,155 @@ class ModelInfo:
     def __post_init__(self):
         if not self.display_name:
             self.display_name = self.name
+
+
+class ReasoningEffort(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+
+
+@dataclass
+class ModelSelectionSignal:
+    """Observed state for cybernetic model selection."""
+
+    task_complexity: str = "moderate"
+    budget_pressure: float = 0.0
+    latency_pressure: float = 0.0
+    recent_failures: int = 0
+    requires_tools: bool = True
+    requires_long_context: bool = False
+    current_model: str = ""
+
+
+@dataclass
+class ModelSelectionDecision:
+    """Controller output for model/routing recommendation."""
+
+    model: str
+    provider: Provider
+    reasoning_effort: ReasoningEffort
+    score: float
+    reasons: list[str] = field(default_factory=list)
+    fallback_model: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "provider": self.provider.value,
+            "reasoning_effort": self.reasoning_effort.value,
+            "score": round(self.score, 3),
+            "reasons": list(self.reasons),
+            "fallback_model": self.fallback_model,
+        }
+
+
+class ModelSelectionController:
+    """Risk/cost adaptive model recommendation controller."""
+
+    def decide(self, signal: ModelSelectionSignal) -> ModelSelectionDecision:
+        candidates = [
+            info for info in list_available_models()
+            if info.supports_tools or not signal.requires_tools
+        ]
+        if not candidates:
+            info = resolve_model_info(signal.current_model or "claude-sonnet-4-20250514")
+            return ModelSelectionDecision(
+                model=info.name,
+                provider=info.provider,
+                reasoning_effort=ReasoningEffort.MEDIUM,
+                score=0.0,
+                reasons=["no compatible candidates"],
+            )
+
+        reasons: list[str] = []
+        complexity = signal.task_complexity.lower()
+        target_power = {"simple": 0.25, "moderate": 0.55, "complex": 0.85}.get(complexity, 0.55)
+        if signal.recent_failures > 0:
+            target_power = min(1.0, target_power + 0.10 * signal.recent_failures)
+            reasons.append(f"recent failures: {signal.recent_failures}")
+        if signal.requires_long_context:
+            target_power = min(1.0, target_power + 0.10)
+            reasons.append("long context required")
+        if signal.budget_pressure >= 0.70:
+            target_power = max(0.20, target_power - 0.25)
+            reasons.append("high budget pressure")
+        elif signal.budget_pressure <= 0.20 and complexity == "complex":
+            target_power = min(1.0, target_power + 0.10)
+            reasons.append("budget allows stronger model")
+        if signal.latency_pressure >= 0.70:
+            target_power = max(0.20, target_power - 0.15)
+            reasons.append("high latency pressure")
+
+        scored: list[tuple[float, ModelInfo, list[str]]] = []
+        for info in candidates:
+            power = self._model_power(info)
+            cost = self._model_cost(info)
+            latency = self._latency_proxy(info)
+            context_fit = 1.0 if not signal.requires_long_context else min(1.0, info.context_window / 200_000)
+
+            score = 1.0 - abs(power - target_power)
+            score -= signal.budget_pressure * cost * 0.45
+            score -= signal.latency_pressure * latency * 0.30
+            score += context_fit * 0.15
+            if signal.current_model and info.name == resolve_model_info(signal.current_model).name:
+                score += 0.05
+            if signal.requires_tools and not info.supports_tools:
+                score -= 1.0
+
+            candidate_reasons = [
+                f"power={power:.2f}",
+                f"cost={cost:.2f}",
+                f"context={info.context_window // 1000}K",
+            ]
+            scored.append((score, info, candidate_reasons))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        best_score, best, candidate_reasons = scored[0]
+        fallback = scored[1][1].name if len(scored) > 1 else None
+        effort = self._reasoning_effort(target_power, signal)
+        return ModelSelectionDecision(
+            model=best.name,
+            provider=best.provider,
+            reasoning_effort=effort,
+            score=max(0.0, best_score),
+            reasons=reasons + candidate_reasons,
+            fallback_model=fallback,
+        )
+
+    def _model_power(self, info: ModelInfo) -> float:
+        name = info.name.lower()
+        if "opus" in name or name == "o1" or "gemini-2.5-pro" in name:
+            return 0.95
+        if "sonnet" in name or "gpt-4o" in name or "o3" in name or "r1" in name:
+            return 0.75
+        if "mini" in name or "haiku" in name or "flash" in name or "deepseek-chat" in name:
+            return 0.35
+        return 0.55
+
+    def _model_cost(self, info: ModelInfo) -> float:
+        blended = (info.pricing_input + info.pricing_output) / 2
+        return min(1.0, blended / 45.0)
+
+    def _latency_proxy(self, info: ModelInfo) -> float:
+        power = self._model_power(info)
+        return min(1.0, 0.25 + power * 0.65)
+
+    def _reasoning_effort(
+        self,
+        target_power: float,
+        signal: ModelSelectionSignal,
+    ) -> ReasoningEffort:
+        if signal.budget_pressure >= 0.80 or signal.latency_pressure >= 0.85:
+            return ReasoningEffort.LOW
+        if target_power >= 0.90:
+            return ReasoningEffort.XHIGH
+        if target_power >= 0.75:
+            return ReasoningEffort.HIGH
+        if target_power >= 0.45:
+            return ReasoningEffort.MEDIUM
+        return ReasoningEffort.LOW
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +296,10 @@ _register(ModelInfo("deepseek/deepseek-r1", Provider.OPENROUTER,
 _register(ModelInfo("deepseek/deepseek-chat", Provider.OPENROUTER,
     context_window=128_000, max_output_tokens=8_192,
     pricing_input=0.14, pricing_output=0.28))
+_register(ModelInfo("deepseek-v4-pro[1m]", Provider.ANTHROPIC,
+    display_name="DeepSeek V4 Pro",
+    context_window=128_000, max_output_tokens=8_192,
+    pricing_input=0.10, pricing_output=0.40))
 _register(ModelInfo("qwen/qwen3-235b-a22b", Provider.OPENROUTER,
     context_window=128_000, max_output_tokens=8_192,
     pricing_input=0.22, pricing_output=0.88))
@@ -186,7 +338,15 @@ def detect_provider(model: str, runtime: dict | None = None) -> Provider:
             # Default to OpenRouter for vendor-prefixed models
             return Provider.OPENROUTER
 
-    # 2. OpenAI detection
+    # 2. DeepSeek direct API detection
+    if model_lower.startswith("deepseek") or "deepseek" in model_lower:
+        if os.environ.get("DEEPSEEK_API_KEY"):
+            return Provider.CUSTOM
+        # If registered as CUSTOM in BUILTIN_MODELS, use that
+        if model in BUILTIN_MODELS and BUILTIN_MODELS[model].provider == Provider.CUSTOM:
+            return Provider.CUSTOM
+
+    # 3. OpenAI detection
     openai_prefixes = ("gpt-4", "gpt-3.5", "o1-", "o3-", "chatgpt-")
     openai_exact = {"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o1-mini", "o3-mini"}
     if model_lower in openai_exact or any(model_lower.startswith(p) for p in openai_prefixes):
@@ -256,7 +416,7 @@ def build_provider_config(model: str, runtime: dict | None = None) -> ProviderCo
     """
     runtime = runtime or {}
     provider = detect_provider(model, runtime)
-    info = resolve_model_info(model, provider)
+    resolve_model_info(model, provider)
 
     if provider == Provider.OPENROUTER:
         return ProviderConfig(
@@ -291,12 +451,16 @@ def build_provider_config(model: str, runtime: dict | None = None) -> ProviderCo
         )
 
     if provider == Provider.CUSTOM:
+        # Check for DeepSeek-specific env vars first
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
         base_url = (
             os.environ.get("CUSTOM_API_BASE_URL", "")
+            or (deepseek_key and "https://api.deepseek.com/v1" or "")
             or runtime.get("customBaseUrl", "")
         ).rstrip("/")
         api_key = (
             os.environ.get("CUSTOM_API_KEY", "")
+            or deepseek_key
             or os.environ.get("OPENAI_API_KEY", "")
             or runtime.get("customApiKey", "")
         )
@@ -398,7 +562,19 @@ def create_model_adapter(
 
     # Anthropic
     from minicode.anthropic_adapter import AnthropicModelAdapter
-    return AnthropicModelAdapter(runtime or {}, tools)
+    enriched = dict(runtime or {})
+    if "model" not in enriched:
+        enriched["model"] = model
+    if "baseUrl" not in enriched:
+        enriched["baseUrl"] = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    if "authToken" not in enriched and "apiKey" not in enriched:
+        token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+        if token:
+            enriched["authToken"] = token
+    # Disable extended thinking for non-standard Anthropic endpoints (DeepSeek etc.)
+    if "api.anthropic.com" not in enriched.get("baseUrl", ""):
+        enriched["disableThinking"] = True
+    return AnthropicModelAdapter(enriched, tools)
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +642,16 @@ def format_model_status(model: str, runtime: dict | None = None) -> str:
     provider = detect_provider(model, runtime)
     info = resolve_model_info(model, provider)
     pconfig = build_provider_config(model, runtime)
+    recommendation = ModelSelectionController().decide(
+        ModelSelectionSignal(
+            task_complexity="moderate",
+            budget_pressure=float((runtime or {}).get("budgetPressure", 0.0) or 0.0),
+            latency_pressure=float((runtime or {}).get("latencyPressure", 0.0) or 0.0),
+            recent_failures=int((runtime or {}).get("recentFailures", 0) or 0),
+            requires_tools=True,
+            current_model=model,
+        )
+    )
 
     lines = [
         "Current Model",
@@ -478,5 +664,11 @@ def format_model_status(model: str, runtime: dict | None = None) -> str:
         f"  Tools:    {'Yes' if info.supports_tools else 'No'}",
         f"  Vision:   {'Yes' if info.supports_vision else 'No'}",
         f"  API Key:  {'*' * 8}{pconfig.api_key[-4:]}" if len(pconfig.api_key) > 4 else "  API Key:  not set",
+        "",
+        "Cybernetic Recommendation",
+        f"  Model:    {recommendation.model}",
+        f"  Effort:   {recommendation.reasoning_effort.value}",
+        f"  Score:    {recommendation.score:.2f}",
+        f"  Reasons:  {', '.join(recommendation.reasons[:4])}",
     ]
     return "\n".join(lines)

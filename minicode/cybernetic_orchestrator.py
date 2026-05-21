@@ -29,7 +29,7 @@ Architecture:
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from typing import Any
 
 from minicode.adaptive_pid_tuner import AdaptivePIDTuner
 from minicode.agent_intelligence import ToolScheduler
@@ -38,14 +38,12 @@ from minicode.context_cybernetics import ContextCyberneticsOrchestrator
 from minicode.cost_control import CostControlLoop
 from minicode.cybernetic_supervisor import CyberneticSupervisor, save_supervisor_report
 from minicode.decoupling_controller import DecouplingController
-from minicode.feedback_controller import FeedbackController, SystemState
+from minicode.feedback_controller import FeedbackController
 from minicode.feedforward_controller import FeedforwardController
 from minicode.logging_config import get_logger
 from minicode.memory import MemoryManager
 from minicode.memory_injector import (
     MemoryInjectionController,
-    MemoryInjectionSignal,
-    MemoryInjector,
 )
 from minicode.model_registry import ModelSelectionController, ModelSelectionSignal
 from minicode.predictive_controller import PredictiveController

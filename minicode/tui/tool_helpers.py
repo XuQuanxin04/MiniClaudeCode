@@ -23,6 +23,12 @@ def _truncate_for_display(text: str, max_len: int = 180) -> str:
 
 
 def _summarize_collapsed_tool_body(output: str) -> str:
+    # Diff-aware summary: count additions and deletions
+    if output.startswith("@@") or "\n@@" in output[:200] or output.startswith("diff "):
+        additions = output.count("\n+") - output.count("\n+++")
+        deletions = output.count("\n-") - output.count("\n---")
+        if additions > 0 or deletions > 0:
+            return f"+{additions} -{deletions}"
     line = next((l.strip() for l in output.split("\n") if l.strip()), "output collapsed")
     return line[:140] + "..." if len(line) > 140 else line
 

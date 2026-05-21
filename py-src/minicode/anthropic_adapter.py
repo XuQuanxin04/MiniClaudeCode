@@ -92,6 +92,13 @@ def _to_assistant_text(message: dict[str, Any]) -> str:
     return message["content"]
 
 
+def _anthropic_messages_url(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        return base + "/messages"
+    return base + "/v1/messages"
+
+
 def _push_anthropic_message(messages: list[dict[str, Any]], role: str, block: dict[str, Any]) -> None:
     if messages and messages[-1]["role"] == role:
         messages[-1]["content"].append(block)
@@ -170,7 +177,7 @@ class AnthropicModelAdapter:
             request_body["stream"] = True
 
         request = urllib.request.Request(
-            url=self.runtime["baseUrl"].rstrip("/") + "/v1/messages",
+            url=_anthropic_messages_url(self.runtime["baseUrl"]),
             data=json.dumps(request_body).encode("utf-8"),
             headers={
                 "content-type": "application/json",

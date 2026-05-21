@@ -18,7 +18,7 @@ import hashlib
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 # Sentinel string marking the boundary between static and dynamic prompt parts.
 # API providers (Anthropic, OpenAI) use this to implement prompt caching.

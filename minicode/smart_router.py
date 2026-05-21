@@ -18,7 +18,7 @@ from typing import Any
 
 from minicode.agent_router import AgentRouter, RoutingDecision, extract_task_profile
 from minicode.logging_config import get_logger
-from minicode.model_registry import BUILTIN_MODELS, ModelInfo, resolve_model_info
+from minicode.model_registry import resolve_model_info
 from minicode.model_switcher import ModelSwitcher, SwitchResult
 
 logger = get_logger("smart_router")
@@ -109,7 +109,6 @@ class FeedbackLearner:
     ) -> str:
         """Pick the best model from candidates based on historical performance."""
         profile = extract_task_profile(task_text)
-        task_type = profile.complexity.value
         
         best_model = candidate_models[0]
         best_score = -1.0

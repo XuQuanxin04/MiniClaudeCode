@@ -95,7 +95,7 @@ def _install_launcher_script() -> str | None:
         launcher_command = "minicode-py"
 
     # 路径安全检查
-    resolved = str(target_bin_dir.resolve())
+    str(target_bin_dir.resolve())
     if '..' in str(target_bin_dir) or '~' in str(target_bin_dir):
         print("⚠️  安装路径包含不安全字符，跳过安装。")
         return None

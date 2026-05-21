@@ -11,10 +11,7 @@ The sub-agent runs a full agent loop (model + tools) with:
 """
 from __future__ import annotations
 
-import json
 import time
-import uuid
-from typing import Any
 
 from minicode.agent_loop import run_agent_turn
 from minicode.tooling import ToolDefinition, ToolResult
@@ -93,7 +90,6 @@ def _run(input_data: dict, context) -> ToolResult:
     - Result summarized for the parent context
     """
     from minicode.model_registry import create_model_adapter
-    from minicode.context_manager import ContextManager
     from minicode.permissions import PermissionManager
     from minicode.tools import create_default_tool_registry
     

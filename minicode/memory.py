@@ -19,7 +19,6 @@ import logging
 import math
 import os
 import re
-import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field

@@ -23,8 +23,16 @@ from minicode.agent_intelligence import (
     NudgeGenerator,
     RecoveryStrategy,
     ToolScheduler,
+    ToolSchedulerController,
+    ToolSchedulingSignal,
 )
-from minicode.memory_injector import InjectedMemory, MemoryInjector
+from minicode.memory_injector import (
+    InjectedMemory,
+    MemoryInjectionController,
+    MemoryInjectionMode,
+    MemoryInjectionSignal,
+    MemoryInjector,
+)
 from minicode.memory import MemoryManager, MemoryScope
 from minicode.tooling import ToolCapability, ToolDefinition, ToolMetadata, ToolRegistry
 
@@ -346,22 +354,55 @@ class TestToolScheduler:
         read_calls = [{"id": "1", "toolName": "read_file", "input": {}}] * 10
         assert scheduler.get_recommended_max_workers(read_calls) == 8
 
-        # With write tools -> capped at call count
+        # With write tools -> controller may reduce concurrency for safety
         write_calls = [
             {"id": "1", "toolName": "read_file", "input": {}},
             {"id": "2", "toolName": "write_file", "input": {}},
         ]
-        assert scheduler.get_recommended_max_workers(write_calls) == 2
+        assert scheduler.get_recommended_max_workers(write_calls) == 1
+        assert "write tools present" in scheduler.last_decision.reasons
 
-        # With command tools -> capped at call count
+        # With command tools -> controller may reduce concurrency for safety
         cmd_calls = [
             {"id": "1", "toolName": "read_file", "input": {}},
             {"id": "2", "toolName": "run_command", "input": {}},
         ]
-        assert scheduler.get_recommended_max_workers(cmd_calls) == 2
+        assert scheduler.get_recommended_max_workers(cmd_calls) == 1
+        assert "command tools present" in scheduler.last_decision.reasons
 
         # Empty -> 1
         assert scheduler.get_recommended_max_workers([]) == 1
+
+    def test_scheduler_controller_keeps_high_concurrency_when_healthy(self):
+        """Healthy signal preserves available concurrency."""
+        controller = ToolSchedulerController()
+        decision = controller.decide(ToolSchedulingSignal(call_count=8))
+        assert decision.max_workers == 8
+        assert decision.concurrency_multiplier == 1.0
+
+    def test_scheduler_controller_reduces_concurrency_on_errors(self):
+        """High error pressure reduces workers and increases retry backoff."""
+        controller = ToolSchedulerController()
+        decision = controller.decide(
+            ToolSchedulingSignal(call_count=8, error_rate=0.6, recent_failures=3)
+        )
+        assert decision.max_workers < 8
+        assert decision.cooldown_seconds > 0
+        assert decision.retry_backoff_multiplier > 1.0
+
+    def test_scheduler_records_last_controller_decision(self):
+        """ToolScheduler exposes the latest controller decision for observability."""
+        scheduler = ToolScheduler()
+        read_calls = [{"id": str(i), "toolName": "read_file", "input": {}} for i in range(6)]
+        workers = scheduler.get_recommended_max_workers(
+            read_calls,
+            error_rate=0.5,
+            avg_latency=20.0,
+            recent_failures=2,
+        )
+        assert workers < 6
+        assert scheduler.last_decision is not None
+        assert "high tool error rate" in scheduler.last_decision.reasons
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +479,54 @@ class TestMemoryInjector:
         contents = [m.content for m in memories]
         # The exact duplicate should appear only once
         assert contents.count("Tests use pytest with fixtures") <= 1
+
+    def test_memory_controller_blocks_under_critical_context_pressure(self):
+        """Critical context pressure disables memory injection."""
+        controller = MemoryInjectionController()
+        decision = controller.decide(
+            MemoryInjectionSignal(context_usage=0.95),
+            base_max_memories=5,
+            base_min_relevance=0.3,
+            base_max_tokens=200,
+        )
+        assert decision.mode == MemoryInjectionMode.NONE
+        assert decision.max_memories == 0
+
+    def test_memory_controller_uses_summary_under_high_pressure(self):
+        """High context pressure switches to compact summary injection."""
+        controller = MemoryInjectionController()
+        decision = controller.decide(
+            MemoryInjectionSignal(context_usage=0.80, retrieval_quality=0.8),
+            base_max_memories=5,
+            base_min_relevance=0.3,
+            base_max_tokens=200,
+        )
+        assert decision.mode == MemoryInjectionMode.SUMMARY
+        assert decision.max_memories <= 2
+        assert decision.max_tokens_per_memory <= 80
+
+    def test_injector_honors_critical_pressure_decision(self, memory_with_entries):
+        """Injector returns no memories when controller blocks injection."""
+        injector = MemoryInjector(memory_manager=memory_with_entries, min_relevance=0.0)
+        memories = injector.inject_for_task(
+            "How does the API work?",
+            signal=MemoryInjectionSignal(context_usage=0.95),
+        )
+        assert memories == []
+        assert injector.last_decision is not None
+        assert injector.last_decision.mode == MemoryInjectionMode.NONE
+
+    def test_failure_recovery_strengthens_memory_injection(self, memory_with_entries):
+        """Failure recovery lowers threshold and records a strong decision."""
+        injector = MemoryInjector(memory_manager=memory_with_entries, max_injected_memories=3)
+        memories = injector.inject_on_failure(
+            "pytest fixture error",
+            "test_runner",
+            signal=MemoryInjectionSignal(recent_failure=True, context_usage=0.3),
+        )
+        assert isinstance(memories, list)
+        assert injector.last_decision is not None
+        assert injector.last_decision.mode == MemoryInjectionMode.STRONG
 
 
 # ---------------------------------------------------------------------------

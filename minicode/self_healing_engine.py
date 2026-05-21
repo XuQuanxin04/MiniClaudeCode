@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from enum import Enum, auto
+from enum import Enum
 from typing import Any, Callable
 
 
@@ -344,21 +344,27 @@ class SelfHealingEngine:
         }
 
     def _execute_model_upgrade(self) -> dict[str, Any]:
-        """Signal model upgrade for performance degradation."""
-        return {
-            "success": True,
-            "action": "Model upgrade recommended due to performance degradation",
-        }
+        """Boost token budget to recover from performance degradation."""
+        if self._compactor and hasattr(self._compactor, '_tool_budget'):
+            bm = self._compactor._tool_budget
+            old = bm.budget_per_message
+            bm.budget_per_message = min(32000, int(old * 1.5))
+            return {
+                "success": True,
+                "action": f"PERFORMANCE: token budget {old}→{bm.budget_per_message}",
+            }
+        return {"success": True, "action": "Model upgrade recommended"}
 
     def _execute_dampen_oscillation(self) -> dict[str, Any]:
         """Apply derivative damping to suppress oscillation."""
         if self._orchestrator and hasattr(self._orchestrator, 'pid'):
             pid = self._orchestrator.pid
-            pid.kd = min(1.0, pid.kd * 1.5)
-            pid.ki = max(0.01, pid.ki * 0.5)
+            pid.kd = min(1.0, pid.kd * 2.0)      # Aggressive derivative damping
+            pid.kp = max(0.3, pid.kp * 0.5)       # Cut proportional gain
+            pid.ki = 0.01                          # Reset integral to prevent windup
             return {
                 "success": True,
-                "action": f"PID damped: kd={pid.kd:.3f} ki={pid.ki:.3f}",
+                "action": f"OSCILLATION damped: kd→{pid.kd:.2f} kp→{pid.kp:.2f} ki reset",
             }
         return {"success": True, "action": "Oscillation damping logged"}
 

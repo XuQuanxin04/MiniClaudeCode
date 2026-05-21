@@ -10,7 +10,6 @@ Key features:
 from __future__ import annotations
 
 import difflib
-from pathlib import Path
 
 from minicode.file_review import apply_reviewed_file_change, load_existing_file
 from minicode.tooling import ToolDefinition, ToolResult
@@ -97,7 +96,7 @@ def _format_mismatch_diagnostic(content: str, search: str) -> str:
     lines = ["Search string not found in file."]
     
     if best_start >= 0 and best_ratio > 0.3:
-        lines.append(f"")
+        lines.append("")
         lines.append(f"Closest match at line {best_start + 1} (similarity: {best_ratio:.0%}):")
         lines.append("")
         

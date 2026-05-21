@@ -37,7 +37,6 @@ def run_headless(prompt: str | None = None) -> str:
     from minicode.permissions import PermissionManager
     from minicode.prompt import build_system_prompt
     from minicode.tools import create_default_tool_registry
-    from minicode.tooling import ToolContext
     from minicode.logging_config import setup_logging, get_logger
 
     setup_logging(level=os.environ.get("MINI_CODE_LOG_LEVEL", "WARNING"))

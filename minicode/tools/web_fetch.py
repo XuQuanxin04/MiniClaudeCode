@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
-import socket
 import urllib.request
 import urllib.error
-from ipaddress import ip_address
 from minicode.tooling import ToolDefinition, ToolResult
 
 MAX_CONTENT_LENGTH = 50000

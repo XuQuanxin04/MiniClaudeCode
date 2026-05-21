@@ -130,7 +130,7 @@ def _validate(input_data: dict) -> dict:
     path = input_data.get("path", ".")
     checks = input_data.get("checks", "all")
     if checks not in ("all", "imports", "style", "complexity"):
-        raise ValueError(f"checks must be one of: all, imports, style, complexity")
+        raise ValueError("checks must be one of: all, imports, style, complexity")
     return {"path": path, "checks": checks}
 
 

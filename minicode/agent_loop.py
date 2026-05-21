@@ -8,7 +8,7 @@ from typing import Any, Callable
 from minicode.context_manager import ContextManager, estimate_message_tokens
 from minicode.logging_config import get_logger
 from minicode.permissions import PermissionManager
-from minicode.state import Store, AppState, increment_tool_calls, add_cost, record_api_error, update_context_usage, set_busy, set_idle
+from minicode.state import Store, AppState, increment_tool_calls, set_busy, set_idle
 from minicode.tooling import ToolContext, ToolRegistry, ToolResult
 from minicode.types import AgentStep, ChatMessage, ModelAdapter
 
@@ -17,29 +17,28 @@ from minicode.hooks import HookEvent, fire_hook_sync
 
 # Intelligence integration
 from minicode.agent_metrics import AgentMetricsCollector
-from minicode.agent_intelligence import ErrorClassifier, NudgeGenerator, RecoveryStrategy, ToolScheduler
+from minicode.agent_intelligence import ErrorClassifier, NudgeGenerator, ToolScheduler
 from minicode.working_memory import protect_context
 
 # Work chain integration
 from minicode.intent_parser import parse_intent
 from minicode.task_object import build_task, TaskObject, TaskState
-from minicode.pipeline_engine import get_pipeline_engine, PipelineEngine
+from minicode.pipeline_engine import get_pipeline_engine
 from minicode.capability_registry import get_registry, CapabilityDomain
-from minicode.layered_context import ContextBuilder, LayeredContext, ContextLayer
-from minicode.decision_audit import get_auditor, DecisionType, DecisionOutcome
+from minicode.layered_context import ContextBuilder, LayeredContext
+from minicode.decision_audit import get_auditor, DecisionOutcome
 
 # 工程控制论集成
+from minicode.cybernetic_orchestrator import CyberneticOrchestrator
 from minicode.cybernetic_supervisor import CyberneticSupervisor, save_supervisor_report
-from minicode.feedback_controller import FeedbackController, SystemState
-from minicode.feedforward_controller import FeedforwardController, PreemptiveConfig
-from minicode.stability_monitor import StabilityMonitor, HealthLevel
+from minicode.feedforward_controller import FeedforwardController
 
 # 高级控制论模块
-from minicode.adaptive_pid_tuner import AdaptivePIDTuner, PIDParameters
-from minicode.state_observer import StateObserver, MeasurementVector, ObservedState
+from minicode.adaptive_pid_tuner import AdaptivePIDTuner
+from minicode.state_observer import StateObserver, MeasurementVector
 from minicode.decoupling_controller import DecouplingController
-from minicode.predictive_controller import PredictiveController, PredictionHorizon
-from minicode.self_healing_engine import SelfHealingEngine, FaultType, FaultSeverity
+from minicode.predictive_controller import PredictiveController
+from minicode.self_healing_engine import SelfHealingEngine
 
 # 任务进度控制
 from minicode.progress_controller import ProgressController, ProgressSignal, ProgressAction
@@ -57,8 +56,6 @@ from minicode.model_switcher import ModelSwitcher
 from minicode.context_compactor import (
     ContextCompactor,
     AutoCompactConfig,
-    CompactTrigger,
-    CompactStrategy,
 )
 from minicode.context_cybernetics import ContextCyberneticsOrchestrator
 from minicode.cost_control import CostControlLoop
@@ -69,36 +66,36 @@ logger = get_logger("agent_loop")
 # 甯搁噺锛氶伩鍏嶉噸澶嶇殑鎻愮ず鏂囨湰
 NUDGE_CONTINUE = (
     "Continue immediately from your <progress> update with concrete tool calls, "
-    "code changes, or an explicit <final> answer only if the task is complete."
+    "code changes, or an explicit <final> answer only if the task is complete. "
+    "Prefer taking the next concrete action over explaining what you plan to do."
 )
 
 NUDGE_AFTER_TOOL_RESULT = (
-    "Continue from your progress update. You have already used tools in this turn, "
-    "so treat plain status text as progress, not a final answer. Respond with the "
-    "next concrete tool call, code change, or an explicit <final> answer only if "
-    "the task is truly complete."
+    "You have received tool results. Review them briefly, then take the next "
+    "concrete action: call another tool, edit code, or give an explicit <final> "
+    "answer only if the task is truly complete. Do not restate what you just saw."
 )
 
 NUDGE_AFTER_EMPTY_RESPONSE = (
-    "Your last response was empty after recent tool results. Continue immediately "
-    "by trying the next concrete step, adapting to any tool errors, or giving an "
-    "explicit <final> answer only if the task is complete."
+    "Your last response was empty. This often happens after tool errors or when "
+    "the model is uncertain. Pick the most likely next action and try it — you can "
+    "adjust based on results. Call a tool, edit code, or give <final> if done."
 )
 
 NUDGE_AFTER_EMPTY_NO_TOOLS = (
-    "Your last response was empty. Continue immediately with concrete tool calls, "
-    "code changes, or an explicit <final> answer only if the task is complete."
+    "Your last response was empty but you have not used any tools yet. Start by "
+    "inspecting the relevant files (read_file, grep_files, list_files) to understand "
+    "the codebase before making changes."
 )
 
 RESUME_AFTER_PAUSE = (
-    "Resume from the previous pause and continue immediately with the next concrete "
-    "tool call, code change, or an explicit <final> answer only if the task is complete."
+    "Resume from the previous pause. Continue with the next concrete tool call, "
+    "code change, or <final> answer."
 )
 
 RESUME_AFTER_MAX_TOKENS = (
-    "Your previous response hit max_tokens during thinking before producing the next "
-    "actionable step. Resume immediately and continue with the next concrete tool call, "
-    "code change, or an explicit <final> answer only if the task is complete."
+    "Your previous response was cut short by the token limit. Resume immediately "
+    "with the next concrete action — pick up where you left off."
 )
 
 
@@ -240,12 +237,28 @@ def _execute_single_tool(
         if store:
             store.set_state(set_busy(tool_name))
         
-        # Execute the tool (ToolRegistry.execute already has its own safety net)
-        result = tools.execute(
-            tool_name,
-            tool_input,
-            ToolContext(cwd=cwd, permissions=permissions, _runtime=runtime),
-        )
+        # Execute the tool with timeout protection
+        import concurrent.futures
+        import os
+        TOOL_TIMEOUT = int(os.environ.get("MINICODE_TOOL_TIMEOUT", "120"))
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    tools.execute,
+                    tool_name, tool_input,
+                    ToolContext(cwd=cwd, permissions=permissions, _runtime=runtime),
+                )
+                result = future.result(timeout=TOOL_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            result = ToolResult(
+                ok=False,
+                output=f"Tool '{tool_name}' timed out after {TOOL_TIMEOUT}s",
+            )
+        except Exception:
+            result = tools.execute(
+                tool_name, tool_input,
+                ToolContext(cwd=cwd, permissions=permissions, _runtime=runtime),
+            )  # Fallback: direct execution
         
         # Post-tool state updates (only for serial execution)
         if store:
@@ -328,6 +341,7 @@ def _model_next(
     try:
         signature = inspect.signature(model.next)
     except (TypeError, ValueError):
+        logger.warning("_model_next: inspect.signature failed, falling back without store")
         return model.next(messages, on_stream_chunk=on_stream_chunk, store=store)
 
     supports_store = any(
@@ -374,43 +388,53 @@ def run_agent_turn(
     task_metadata: dict = {}
     layered_context: LayeredContext | None = None
     context_builder: ContextBuilder | None = None
-    pipeline_engine: PipelineEngine | None = None
     auditor = get_auditor() if enable_work_chain else None
 
-    # 工程控制论控制器初始化
-    feedback_controller: FeedbackController | None = None
-    feedforward_controller: FeedforwardController | None = None
-    stability_monitor: StabilityMonitor | None = None
-    cybernetic_supervisor: CyberneticSupervisor | None = None
+    # 工程控制论控制器初始化（通过 Orchestrator 统一管理）
+    orch: CyberneticOrchestrator | None = None
+    feedback_controller: Any = None
+    feedforward_controller: Any = None
+    stability_monitor: Any = None
+    cybernetic_supervisor: Any = None
 
-    # 高级控制论模块
-    adaptive_pid_tuner: AdaptivePIDTuner | None = None
-    state_observer: StateObserver | None = None
-    decoupling_controller: DecouplingController | None = None
-    predictive_controller: PredictiveController | None = None
-    self_healing_engine: SelfHealingEngine | None = None
-    progress_controller: ProgressController | None = None
-    memory_injection_ctrl: MemoryInjectionController | None = None
-    model_selection_ctrl: ModelSelectionController | None = None
-    smart_router: SmartRouter | None = None
-    reflection_engine: ReflectionEngine | None = None
-    model_switcher: ModelSwitcher | None = None
-    memory_injector: MemoryInjector | None = None
+    adaptive_pid_tuner: Any = None
+    state_observer: Any = None
+    decoupling_controller: Any = None
+    predictive_controller: Any = None
+    self_healing_engine: Any = None
+    progress_controller: Any = None
+    memory_injection_ctrl: Any = None
+    model_selection_ctrl: Any = None
+    smart_router: Any = None
+    reflection_engine: Any = None
+    model_switcher: Any = None
+    memory_injector: Any = None
 
     if enable_work_chain:
         task, task_metadata = _build_work_chain_task(current_messages)
         layered_context, context_builder = _build_layered_context(
             current_messages, system_prompt, project_context, task,
         )
-        pipeline_engine = get_pipeline_engine()
+        get_pipeline_engine()
         _register_tool_capabilities(tools)
 
-        # 初始化反馈控制器（负反馈 + 正反馈）
-        feedback_controller = FeedbackController()
-        cybernetic_supervisor = CyberneticSupervisor()
-        logger.info("Feedback controller initialized: negative + positive feedback loops")
-
-        # 智能路由：根据任务复杂度选择最优模型
+        # 初始化所有工程控制论控制器（通过 Orchestrator 统一管理）
+        orch = CyberneticOrchestrator()
+        orch.initialize(model, tools, runtime)
+        feedback_controller = orch.feedback
+        cybernetic_supervisor = orch.cyber_supervisor
+        stability_monitor = orch.stability
+        adaptive_pid_tuner = orch.adaptive_tuner
+        state_observer = orch.state_observer
+        decoupling_controller = orch.decoupling
+        predictive_controller = orch.predictive
+        progress_controller = orch.progress
+        memory_injection_ctrl = orch.memory_ctrl
+        model_selection_ctrl = orch.model_ctrl
+        smart_router = orch.smart_router
+        reflection_engine = orch.reflection
+        model_switcher = orch.model_switcher
+        logger.info("CyberneticOrchestrator: %d controllers initialized", 15)
         if smart_router and task:
             try:
                 current_model_id = model.model_id if hasattr(model, 'model_id') else ""
@@ -460,42 +484,6 @@ def run_agent_turn(
                     ", ".join(risk_assessment.identified_risks[:3]),
                 )
 
-        # 初始化稳定性监测器（系统观测器）
-        stability_monitor = StabilityMonitor(window_size=100)
-        logger.info("Stability monitor initialized: real-time health tracking")
-
-        # 初始化自适应PID调参器
-        adaptive_pid_tuner = AdaptivePIDTuner()
-        logger.info("Adaptive PID tuner initialized: self-tuning control")
-
-        # 初始化状态观测器（卡尔曼滤波）
-        state_observer = StateObserver()
-        logger.info("State observer initialized: Kalman filter-based estimation")
-
-        # 初始化进度控制器
-        progress_controller = ProgressController()
-
-        # 初始化记忆注入和模型选择控制器
-        memory_injection_ctrl = MemoryInjectionController()
-        model_selection_ctrl = ModelSelectionController()
-
-        # 初始化智能路由、自省和模型热切换 (Phase 3)
-        smart_router = SmartRouter()
-        reflection_engine = ReflectionEngine(memory_manager=None)
-        model_switcher = ModelSwitcher(
-            current_model=getattr(model, 'model_id', ''),
-            current_runtime=runtime or {},
-            current_tools=tools,
-        )
-
-        # 初始化多变量解耦控制器
-        decoupling_controller = DecouplingController()
-        logger.info("Decoupling controller initialized: multi-variable control")
-
-        # 初始化预测控制器
-        predictive_controller = PredictiveController()
-        logger.info("Predictive controller initialized: proactive control")
-
         # 模型选择控制器：根据任务特征推荐模型
         if model_selection_ctrl and task:
             try:
@@ -531,11 +519,12 @@ def run_agent_turn(
             if reflection_engine:
                 reflection_engine.memory = memory_mgr
             # 初始化 MemoryInjector，将控制论决策落地为实际记忆注入
-            # 同时创建 Reranker（LLM 策展，提高检索精度 ~40% -> ~8% 噪音）
+            # 同时创建 Reranker（使用真实 LLM 做记忆策展）
             memory_reranker = None
             try:
-                from minicode.memory_reranker import create_reranker
-                memory_reranker = create_reranker()
+                from minicode.memory_reranker import MemoryReranker
+                # Use the agent's model for reranking (lightweight prompt, ~500 tokens)
+                memory_reranker = MemoryReranker(model_adapter=model)
             except Exception:
                 pass
             memory_injector = MemoryInjector(
@@ -994,7 +983,7 @@ def run_agent_turn(
                 # Multiple calls — use ToolScheduler for intelligent partitioning
                 concurrent_calls, serial_calls = tool_scheduler.schedule_calls(calls, tools)
 
-                _results: list[tuple[dict, ToolResult]] = []
+                _results.clear()  # Reuse outer declaration
 
                 # Phase 1: Run all concurrent-safe tools in parallel
                 if concurrent_calls:
@@ -1004,6 +993,10 @@ def run_agent_turn(
                         avg_latency=step * 2.0,
                         recent_failures=tool_error_count,
                     )
+                    # Apply cybernetic concurrency cap if FeedbackController reduced parallelism
+                    force_cap = getattr(tool_scheduler, '_force_max_workers', None)
+                    if force_cap:
+                        max_workers = min(max_workers, force_cap)
                     if tool_scheduler.last_decision:
                         logger.info(
                             "ToolSchedulerController: workers=%d multiplier=%.2f cooldown=%.2fs [%s]",
@@ -1259,6 +1252,33 @@ def run_agent_turn(
                 except Exception:
                     pass
 
+            # 记忆质量反馈：任务成功→注入的记忆 usage_count+1
+            if memory_injector and hasattr(memory_injector, '_cached_result'):
+                try:
+                    from minicode.memory import MemoryScope
+                    for mem in memory_injector._cached_result:
+                        if not hasattr(mem, 'id'):
+                            continue
+                        try:
+                            _mgr = memory_mgr
+                        except NameError:
+                            continue
+                        for scope_name in ['project', 'local', 'user']:
+                            try:
+                                scope = MemoryScope(scope_name)
+                                if scope in _mgr.memories:
+                                    entry = _mgr.memories[scope]._id_index.get(mem.id)
+                                    if entry:
+                                        entry.usage_count += (2 if tool_error_count == 0 else -1)
+                                        entry.last_accessed = time.time()
+                                        break
+                                        entry.last_accessed = time.time()
+                                        break
+                            except (ValueError, KeyError):
+                                continue
+                except Exception:
+                    pass
+
             # 路由反馈学习：记录任务结果以优化未来路由
             if smart_router and task:
                 try:
@@ -1372,11 +1392,12 @@ def run_agent_turn(
                 )
             # Apply outer-loop ControlSignal to runtime parameters
             if control_signal.confidence > 0.6:
-                if control_signal.limit_max_steps:
+                if control_signal.limit_max_steps and control_signal.limit_max_steps < max_steps:
                     logger.info(
-                        "FeedbackController: limit_max_steps=%d (was %d)",
-                        control_signal.limit_max_steps, max_steps,
+                        "FeedbackController: limiting max_steps %d → %d",
+                        max_steps, control_signal.limit_max_steps,
                     )
+                    max_steps = control_signal.limit_max_steps
                 if control_signal.adjust_token_budget != 1.0:
                     if context_compactor and hasattr(context_compactor, '_tool_budget') and context_compactor._tool_budget:
                         new_budget = max(
@@ -1389,45 +1410,42 @@ def run_agent_turn(
                             new_budget, control_signal.adjust_token_budget,
                         )
                 if control_signal.reduce_parallelism:
+                    # Cap tool concurrency at 2
+                    if not hasattr(tool_scheduler, '_force_max_workers'):
+                        tool_scheduler._force_max_workers = 2
                     logger.info(
-                        "FeedbackController: reduce_parallelism=True "
-                        "(oscillation=%.2f stability=%.2f)",
-                        control_signal.oscillation_index,
-                        system_state.stability_score(),
+                        "FeedbackController: reduce_parallelism → max_workers=2 "
+                        "(oscillation=%.2f)", control_signal.oscillation_index,
                     )
                 if control_signal.adjust_concurrency != 0:
+                    cap = max(1, 4 + control_signal.adjust_concurrency)
+                    tool_scheduler._force_max_workers = cap
                     logger.info(
-                        "FeedbackController: adjust_concurrency=%+d "
-                        "(error_rate=%.2f avg_latency=%.2f)",
-                        control_signal.adjust_concurrency,
-                        system_state.error_frequency,
-                        system_state.avg_response_time,
+                        "FeedbackController: adjust_concurrency=%+d → max_workers=%d",
+                        control_signal.adjust_concurrency, cap,
                     )
                 if control_signal.increase_model_level:
                     logger.info(
-                        "FeedbackController: recommends model upgrade "
-                        "(error_rate=%.2f performance=%.2f)",
-                        system_state.error_frequency,
-                        system_state.performance_score(),
+                        "FeedbackController: model upgrade recommended (errors=%.2f perf=%.2f)",
+                        system_state.error_frequency, system_state.performance_score(),
                     )
+                    if model_switcher:
+                        model_switcher._pending_upgrade = True
                 if control_signal.decrease_model_level:
                     logger.info(
-                        "FeedbackController: recommends model downgrade "
-                        "(cost optimization, token_efficiency=%.2f)",
+                        "FeedbackController: model downgrade recommended (efficiency=%.2f)",
                         system_state.token_efficiency,
                     )
                 if control_signal.suggest_memory_persistence:
-                    logger.info(
-                        "FeedbackController: suggests persisting working memory "
-                        "(skill_effectiveness=%.2f)",
-                        system_state.skill_effectiveness,
-                    )
+                    logger.info("FeedbackController: persisting working memory")
+                    if context_compactor and hasattr(context_compactor, '_tool_budget'):
+                        try:
+                            context_compactor._tool_budget.flush()
+                        except Exception:
+                            pass
                 if control_signal.recommend_skill_update:
-                    logger.info(
-                        "FeedbackController: recommends skill update "
-                        "(pattern_reuse=%.2f)",
-                        system_state.pattern_reuse_rate,
-                    )
+                    logger.info("FeedbackController: skill update recommended (pattern=%.2f)",
+                               system_state.pattern_reuse_rate)
 
             # 自适应PID调参：每20轮自动调节内外环PID参数
             if adaptive_pid_tuner and step > 0 and step % 20 == 0 and feedback_controller:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
@@ -424,7 +423,7 @@ def format_config_diagnostic(cwd: str | Path | None = None) -> str:
         if config.get('openaiBaseUrl') and provider in (Provider.OPENAI, Provider.OPENROUTER, Provider.CUSTOM):
             lines.append(f"  OpenAI Base URL: {config.get('openaiBaseUrl')}")
         if config.get('openrouterApiKey'):
-            lines.append(f"  OpenRouter: configured")
+            lines.append("  OpenRouter: configured")
         if config.get('customBaseUrl'):
             lines.append(f"  Custom Base URL: {config.get('customBaseUrl')}")
 

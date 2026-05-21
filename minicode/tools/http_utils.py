@@ -52,16 +52,15 @@ def _run_http_request(input_data: dict, context: ToolContext) -> ToolResult:
             # Try to parse JSON
             try:
                 content = json.dumps(json.loads(content), indent=2, ensure_ascii=False)
-                content_type = "application/json"
             except (json.JSONDecodeError, UnicodeDecodeError):
-                content_type = response_headers.get("Content-Type", "text/plain")
+                response_headers.get("Content-Type", "text/plain")
             
             lines = [
-                f"--- Response ---",
+                "--- Response ---",
                 f"Status: {status}",
                 f"Headers: {json.dumps(response_headers, indent=2)}",
-                f"",
-                f"Body:",
+                "",
+                "Body:",
                 content[:10000],  # Limit output
             ]
             

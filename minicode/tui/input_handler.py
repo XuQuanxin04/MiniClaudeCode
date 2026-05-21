@@ -6,7 +6,6 @@ import sys
 import threading
 import time
 from typing import Any, Callable
-from minicode.tui.input_parser import KeyEvent, ParsedInputEvent, TextEvent, WheelEvent, parse_input_chunk
 from minicode.tui.state import ScreenState, TtyAppArgs
 from minicode.cli_commands import try_handle_local_command, find_matching_slash_commands
 from minicode.agent_loop import run_agent_turn
@@ -15,8 +14,6 @@ from minicode.history import save_history_entries
 from minicode.local_tool_shortcuts import parse_local_tool_shortcut
 from minicode.prompt import build_system_prompt
 from minicode.tooling import ToolContext
-from minicode.tui.navigation import _scroll_pending_approval_by, _toggle_pending_approval_expand, _move_pending_approval_selection, _scroll_transcript_by, _jump_transcript_to_edge, _history_up, _history_down, _get_visible_commands
-from minicode.tui.chrome import _cached_terminal_size
 from minicode.tui.tool_helpers import _summarize_tool_input, _is_file_edit_tool, _extract_path_from_tool_input, _summarize_collapsed_tool_body
 from minicode.tui.tool_lifecycle import _push_transcript_entry, _update_tool_entry, _update_transcript_entry, _append_to_transcript_entry, _collapse_tool_entry, _finalize_dangling_running_tools, _get_running_tool_entries, _schedule_tool_auto_collapse
 
@@ -146,6 +143,7 @@ class _RawModeContext:
     def __init__(self) -> None:
         self._old_settings: Any = None
         self._old_cp: int | None = None
+        self._old_sigwinch: Any = None
 
     def __enter__(self) -> _RawModeContext:
         if sys.platform == "win32":
@@ -162,10 +160,22 @@ class _RawModeContext:
                 pass
         else:
             import termios
+            import signal
 
             fd = sys.stdin.fileno()
             self._old_settings = termios.tcgetattr(fd)
             new = termios.tcgetattr(fd)
+
+            # Wire SIGWINCH to invalidate terminal size cache on resize
+            try:
+                import signal
+
+                def _on_resize(signum, frame):
+                    from minicode.tui.chrome import invalidate_terminal_size_cache
+                    invalidate_terminal_size_cache()
+                self._old_sigwinch = signal.signal(signal.SIGWINCH, _on_resize)
+            except (ImportError, AttributeError):
+                pass  # Windows or no SIGWINCH support
             # Input flags: disable CR→NL translation and XON/XOFF flow control,
             # strip high bit, and break signal generation.
             new[0] &= ~(
@@ -201,8 +211,15 @@ class _RawModeContext:
                     pass
         elif self._old_settings is not None:
             import termios
+            import signal
 
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_settings)
+            if getattr(self, '_old_sigwinch', None) is not None:
+                try:
+                    import signal
+                    signal.signal(signal.SIGWINCH, self._old_sigwinch)
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -264,10 +281,15 @@ def _handle_input(
 ) -> bool:
     """Returns True if /exit was typed."""
     if state.is_busy:
+        # Animated spinner during tool execution
+        import itertools, time
+        spinners = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+        tick = int(time.monotonic() * 8) % len(spinners)
+        spin = spinners[tick]
         state.status = (
-            f"Running {state.active_tool}..."
+            f"{spin} {state.active_tool}..."
             if state.active_tool
-            else "Current turn is still running..."
+            else f"{spin} Running..."
         )
         return False
 
@@ -474,12 +496,15 @@ def _handle_input(
         rerender()
 
     def on_tool_result(tool_name: str, output: str, is_error: bool) -> None:
-        # 计算并显示工具执行时间
-        elapsed = ""
+        # Track tool execution time
+        elapsed_note = ""
         if state.tool_start_time is not None:
             elapsed_secs = time.monotonic() - state.tool_start_time
-            if elapsed_secs > 1:
-                elapsed = f" ({elapsed_secs:.1f}s)"
+            if elapsed_secs > 0.5:
+                if elapsed_secs < 60:
+                    elapsed_note = f"[{elapsed_secs:.1f}s] "
+                else:
+                    elapsed_note = f"[{elapsed_secs/60:.1f}m] "
         
         pending = pending_tool_entries.get(tool_name, [])
         entry_id = pending.pop(0) if pending else None
@@ -522,7 +547,7 @@ def _handle_input(
                 })
                 
                 # 错误恢复引导
-                display_output = output
+                display_output = elapsed_note + output
                 if is_error:
                     suggestions = []
                     output_lower = output.lower()

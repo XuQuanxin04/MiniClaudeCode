@@ -7,9 +7,10 @@ from .chrome import (
     _cached_terminal_size,
     RESET,
     DIM,
-    BOLD,
     ICON_DIVIDER,
     ICON_DOT,
+    _looks_like_diff_block,
+    colorize_unified_diff_block,
 )
 from .markdown import render_markdownish
 from .theme import theme
@@ -19,6 +20,9 @@ from .types import TranscriptEntry
 _SEPARATOR = f"  {DIM}{ICON_DOT} {ICON_DIVIDER * 3} {ICON_DOT}{RESET}"
 _SEPARATOR_LINES = ["", _SEPARATOR, ""]
 _SEPARATOR_LINE_COUNT = 3
+
+# Tool names that produce diff output
+_DIFF_TOOLS = frozenset({"edit_file", "patch_file", "diff_viewer"})
 
 # Tool output preview limits (match Rust TOOL_PREVIEW_LINES / TOOL_PREVIEW_CHARS)
 _TOOL_PREVIEW_LINES = 6
@@ -104,32 +108,38 @@ def _render_transcript_entry(entry: TranscriptEntry) -> str:
         if entry.status == "running":
             body = entry.body
         elif is_collapsing:
-            if collapsible_by_lines:
-                preview = "\n".join(body_lines[:_TOOL_PREVIEW_LINES])
-                hidden = max(0, total_lines - _TOOL_PREVIEW_LINES)
-                body = (
-                    preview_tool_body(entry.toolName or "", render_markdownish(preview))
-                    + (f"\n{t.subtle}  ... {hidden} more lines{t.reset}" if hidden > 0 else "")
-                )
-            else:
-                body = preview_tool_body(entry.toolName or "", render_markdownish(entry.body))
+            body = _render_tool_body(entry, body_lines, total_lines, collapsible_by_lines, is_collapsed)
         elif is_collapsed:
             summary = entry.collapsedSummary or "output collapsed"
             body = f"{t.subtle}{t.italic}{summary}{t.reset}"
         else:
-            if collapsible_by_lines:
-                preview = "\n".join(body_lines[:_TOOL_PREVIEW_LINES])
-                hidden = total_lines - _TOOL_PREVIEW_LINES
-                body = (
-                    preview_tool_body(entry.toolName or "", render_markdownish(preview))
-                    + f"\n{t.subtle}  ... {hidden} more lines{t.reset}"
-                )
-            else:
-                body = preview_tool_body(entry.toolName or "", render_markdownish(entry.body))
+            body = _render_tool_body(entry, body_lines, total_lines, collapsible_by_lines, is_collapsed)
 
         return f"{label}\n{_indent_block(body)}"
 
     return ""
+
+
+def _render_tool_body(entry, body_lines, total_lines, collapsible, is_collapsed):
+    """Render tool body with diff coloring for edit/patch/diff tools."""
+    t = theme()
+    body = entry.body
+
+    if entry.toolName in _DIFF_TOOLS and _looks_like_diff_block(body):
+        colored = colorize_unified_diff_block(body)
+        if collapsible and not is_collapsed:
+            preview = "\n".join(colored.split("\n")[:_TOOL_PREVIEW_LINES])
+            hidden = max(0, total_lines - _TOOL_PREVIEW_LINES)
+            return preview + (f"\n{t.subtle}  ... {hidden} more lines{t.reset}" if hidden > 0 else "")
+        return colored
+
+    if collapsible and not is_collapsed:
+        preview = "\n".join(body_lines[:_TOOL_PREVIEW_LINES])
+        hidden = max(0, total_lines - _TOOL_PREVIEW_LINES)
+        return preview_tool_body(entry.toolName or "", render_markdownish(preview)) + (
+            f"\n{t.subtle}  ... {hidden} more lines{t.reset}" if hidden > 0 else ""
+        )
+    return preview_tool_body(entry.toolName or "", render_markdownish(body))
 
 
 def get_transcript_window_size(window_size: int | None = None) -> int:
@@ -343,19 +353,54 @@ def render_transcript(
         end = total_lines
         start = max(0, end - ws)
         visible_lines = _render_visible_window(entries, start, end, revision)
-        return "\n".join(visible_lines)
+        body = "\n".join(visible_lines)
+        scrollbar = _render_scrollbar(offset, max_offset, len(visible_lines))
+        return _interleave_scrollbar(body, scrollbar)
 
     content_ws = max(1, ws - 1)
     end = total_lines - offset
     start = max(0, end - content_ws)
     visible_lines = _render_visible_window(entries, start, end, revision)
     body = "\n".join(visible_lines)
+    scrollbar = _render_scrollbar(offset, max_offset, len(visible_lines))
 
-    return (
+    indicator = (
         f"{body}\n"
         f"{t.subtle}  {ICON_DIVIDER * 2} scroll {offset}/{max_offset} "
         f"(PgUp/PgDn or scroll){ICON_DIVIDER * 2}{t.reset}"
     )
+    return _interleave_scrollbar(indicator, scrollbar)
+
+
+def _render_scrollbar(offset: int, max_offset: int, height: int) -> list[str]:
+    """Render a vertical scrollbar as a list of characters, one per line."""
+    if max_offset <= 0 or height < 3:
+        return [" "] * max(1, height)
+    # Thumb position (0 = top)
+    pos = int((offset / max_offset) * (height - 1))
+    bar = []
+    for i in range(height):
+        if i == pos:
+            bar.append("█")
+        elif i == 0 and offset > 0:
+            bar.append("▲")
+        elif i == height - 1 and offset < max_offset:
+            bar.append("▼")
+        else:
+            bar.append("░")
+    return bar
+
+
+def _interleave_scrollbar(body: str, scrollbar: list[str]) -> str:
+    """Append scrollbar characters to each line of body."""
+    lines = body.split("\n")
+    result = []
+    for i, line in enumerate(lines):
+        if i < len(scrollbar):
+            result.append(f"{line}{scrollbar[i]}")
+        else:
+            result.append(line)
+    return "\n".join(result)
 
 
 # ---------------------------------------------------------------------------

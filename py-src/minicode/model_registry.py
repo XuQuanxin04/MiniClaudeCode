@@ -256,7 +256,7 @@ def build_provider_config(model: str, runtime: dict | None = None) -> ProviderCo
     previously scattered across main.py, headless.py, gateway.py, etc.
     """
     runtime = runtime or {}
-    provider = detect_provider(model, runtime)
+    provider = detect_provider(model)
     info = resolve_model_info(model, provider)
 
     if provider == Provider.OPENROUTER:

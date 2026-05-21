@@ -56,6 +56,7 @@ class MemoryPipeline:
         self._curator: Any = None
         self._reflection: Any = None
         self._vector_store: Any = None
+        self._dense_store: Any = None
         self._domain_classifier_loaded = False
 
         self._initialized = False
@@ -101,21 +102,24 @@ class MemoryPipeline:
         from minicode.agent_reflection import ReflectionEngine
         self._reflection = ReflectionEngine(memory_manager=self._memory)
 
-        # Vector store (optional)
+        # Vector store — sparse TF-IDF always available, optional sentence-transformers
         if enable_vector:
             try:
-                from minicode.vector_memory import VectorMemoryStore
-                self._vector_store = VectorMemoryStore()
-                if self._vector_store.enabled and self._memory:
-                    # Index existing memories
+                from minicode.vector_memory import SparseVectorStore, VectorMemoryStore
+                self._vector_store = SparseVectorStore()  # Zero-dependency, always works
+                # Also try the optional dense backend
+                self._dense_store = VectorMemoryStore()
+                if self._memory:
                     all_entries = []
                     from minicode.memory import MemoryScope
                     for scope in MemoryScope:
                         if scope in self._memory.memories:
                             all_entries.extend(self._memory.memories[scope].entries)
                     if all_entries:
-                        indexed = self._vector_store.index_entries(all_entries)
-                        logger.info("VectorMemoryStore: indexed %d existing entries", indexed)
+                        n = self._vector_store.index_entries(all_entries)
+                        logger.info("SparseVectorStore: indexed %d entries", n)
+                        if self._dense_store.enabled:
+                            self._dense_store.index_entries(all_entries)
             except Exception:
                 pass
 
@@ -125,6 +129,64 @@ class MemoryPipeline:
             self._reranker.enabled if self._reranker else False,
             self._vector_store is not None and self._vector_store.enabled if self._vector_store else False,
         )
+
+        # Restore persisted state
+        self._load_state()
+
+    # ── State persistence ────────────────────────────────────────────
+
+    def _state_path(self) -> str | None:
+        """Path for pipeline state file."""
+        if not self._workspace:
+            return None
+        import os
+        return os.path.join(self._workspace, ".mini-code-memory", "pipeline_state.json")
+
+    def save_state(self) -> None:
+        """Persist pipeline state to disk (cache stats, counters, curator history)."""
+        path = self._state_path()
+        if not path:
+            return
+        try:
+            import json
+            import os
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            state = {
+                "read_count": self._read_count,
+                "write_count": self._write_count,
+                "maintain_count": self._maintain_count,
+                "reranker_cache_hits": self._reranker._cache_hits if self._reranker else 0,
+                "reranker_call_count": self._reranker._call_count if self._reranker else 0,
+                "curator_history": self._curator.get_history() if self._curator else [],
+                "timestamp": time.time(),
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            logger.debug("MemoryPipeline save_state failed: %s", e)
+
+    def _load_state(self) -> None:
+        """Restore pipeline state from disk."""
+        path = self._state_path()
+        if not path:
+            return
+        try:
+            import json
+            import os
+            if not os.path.exists(path):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            self._read_count = state.get("read_count", 0)
+            self._write_count = state.get("write_count", 0)
+            self._maintain_count = state.get("maintain_count", 0)
+            if self._reranker:
+                self._reranker._cache_hits = state.get("reranker_cache_hits", 0)
+                self._reranker._call_count = state.get("reranker_call_count", 0)
+            logger.debug("MemoryPipeline: restored state (%d reads, %d writes)",
+                        self._read_count, self._write_count)
+        except Exception as e:
+            logger.debug("MemoryPipeline _load_state failed: %s", e)
 
     @property
     def initialized(self) -> bool:
@@ -302,10 +364,12 @@ class MemoryPipeline:
                     "MemoryPipeline: wrote reflection success=%s confidence=%.2f",
                     result.success, result.confidence,
                 )
+                self.save_state()
                 return getattr(entry, 'id', None)
         except Exception:
             pass
 
+        self.save_state()
         return None
 
     # ── FEEDBACK: Close the quality loop (F2) ────────────────────────
@@ -356,6 +420,7 @@ class MemoryPipeline:
         self._maintain_count += 1
         try:
             report = self._curator.run_cycle(force=True)
+            self.save_state()
             return report.to_dict()
         except Exception:
             return None
@@ -438,7 +503,6 @@ class MemoryPipeline:
         self, task_description: str, active_domains: list[str] | None, max_results: int
     ) -> list[Any]:
         """Search with query reformulation fallback for poor initial results."""
-        from minicode.memory import MemoryScope
 
         entries = self._memory.search(
             task_description, limit=max_results, active_domains=active_domains,

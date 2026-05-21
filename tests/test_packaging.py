@@ -40,8 +40,10 @@ def test_legacy_root_smoke_scripts_are_not_pytest_collected() -> None:
         for path in ROOT.glob(pattern)
     }
 
-    assert root_smoke_scripts
-    assert root_smoke_scripts.issubset(set(conftest.collect_ignore))
+    # After cleanup: root smoke scripts were migrated to tests/ or deleted.
+    # If any remain, they must be excluded from pytest collection.
+    if root_smoke_scripts:
+        assert root_smoke_scripts.issubset(set(conftest.collect_ignore))
     assert "benchmarks/*.py" in conftest.collect_ignore_glob
 
 

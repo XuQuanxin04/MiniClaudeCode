@@ -45,12 +45,11 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Callable
+from typing import Any
 
 from .context_compactor import (
-    AutoCompactConfig,
     CompactStrategy,
     CompactTrigger,
     CompactionResult,
@@ -558,7 +557,6 @@ class CyberneticFeedbackLoop:
             self._compaction_history = self._compaction_history[-self._history_size // 2:]
 
         if self._last_usage_before > 0:
-            was_rising = usage_before > self._last_usage_before
             now_direction = "up" if usage_after > usage_before else "down"
             prev_direction = "up" if usage_before > self._last_usage_before else "down"
             if now_direction != prev_direction:
@@ -838,7 +836,7 @@ class ContextCyberneticsOrchestrator:
 
         reading = self.sensor.get_recent_readings(1)[0] if self.sensor._history else None
         fb_stats = self.feedback.get_stats()
-        pred_latest = self.predictor._predictions[-1] if self.predictor._predictions else None
+        self.predictor._predictions[-1] if self.predictor._predictions else None
 
         return SystemState(
             success_rate=fb_stats.get("effectiveness_rate", 1.0),

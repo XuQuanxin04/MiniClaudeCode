@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 from minicode.tooling import ToolDefinition, ToolResult
 from minicode.workspace import resolve_tool_path
 
@@ -233,7 +231,7 @@ def _run(input_data: dict, context) -> ToolResult:
     lines.extend([
         "",
         "-" * 60,
-        f"📊 Stats:",
+        "📊 Stats:",
         f"  Files: {total_files}",
         f"  Directories: {total_dirs}",
         f"  Max depth shown: {max_depth}",

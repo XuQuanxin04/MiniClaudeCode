@@ -317,7 +317,7 @@ def _run(input_data: dict, context) -> ToolResult:
             lines.append("Full Output:")
             lines.append(output[:5000])
             if len(output) > 5000:
-                lines.append(f"\n... (output truncated)")
+                lines.append("\n... (output truncated)")
         
     except subprocess.TimeoutExpired:
         lines.append(f"❌ Tests timed out after {timeout} seconds")

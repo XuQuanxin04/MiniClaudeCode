@@ -120,37 +120,37 @@ class TestContextPIDController:
         output = pid.compute(0.70)
         assert output == 0.0
 
-    def test_second_call_positive_error_produces_output(self):
+    def test_second_call_above_setpoint_produces_positive_output(self):
         pid = ContextPIDController(kp=2.0, setpoint=0.70)
         pid.compute(0.70)
         import time as _t; _t.sleep(0.01)
         output = pid.compute(0.90)
-        assert output <= 0.0  # clamped to output_min=0.0
+        assert output > 0
 
-    def test_second_call_negative_error_produces_positive_output(self):
+    def test_second_call_below_setpoint_stays_minimal(self):
         pid = ContextPIDController(kp=2.0, setpoint=0.70)
         pid.compute(0.70)
         import time as _t; _t.sleep(0.01)
         output = pid.compute(0.50)
-        assert output > 0
+        assert output == 0.0
 
     def test_output_clamping_high(self):
         pid = ContextPIDController(kp=100.0, setpoint=0.70)
         pid.compute(0.70)
-        output = pid.compute(0.0)
+        output = pid.compute(2.0)
         assert output <= 1.0
 
     def test_output_clamping_low(self):
         pid = ContextPIDController(kp=100.0, ki=0.0, kd=0.0, setpoint=0.70)
         pid.compute(0.70)
-        output = pid.compute(2.0)
-        assert output >= -1.0
+        output = pid.compute(0.0)
+        assert output >= 0.0
 
     def test_integral_windup_limit(self):
         pid = ContextPIDController(kp=0.0, ki=1.0, kd=0.0, integral_windup_limit=1.0, setpoint=0.70)
         pid.compute(0.70)
         for _ in range(100):
-            pid.compute(0.0)
+            pid.compute(2.0)
         assert abs(pid._integral) <= 1.0 + 0.01
 
     def test_reset_clears_state(self):
@@ -166,7 +166,7 @@ class TestContextPIDController:
         pid = ContextPIDController(kp=50.0, setpoint=0.70)
         pid.compute(0.70)
         for _ in range(15):
-            pid.compute(0.0)
+            pid.compute(2.0)
         assert len(pid.output_history) >= 10
         assert pid.is_saturated is True
 
@@ -457,6 +457,14 @@ class TestContextCyberneticsOrchestrator:
     def test_pid_setpoint_respected(self):
         orch = self._make_orchestrator()
         assert orch.pid.setpoint == 0.70
+
+    def test_pid_intensity_rises_when_usage_exceeds_setpoint(self):
+        orch = self._make_orchestrator(context_window=5000)
+        orch.run_cycle(make_msgs(10, size=90), turn_id=1)
+        _, _, act = orch.run_cycle(make_msgs(80, size=90), turn_id=2)
+        assert act is not None
+        assert act.pid_output > 0
+        assert act.compaction_intensity >= act.pid_output
 
     def test_sensor_records_reading_each_cycle(self):
         orch = self._make_orchestrator(context_window=5000)

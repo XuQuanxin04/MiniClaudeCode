@@ -18,7 +18,6 @@ Architecture:
 """
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import time
@@ -267,9 +266,18 @@ class MemoryReranker:
             else:
                 response_text = str(raw)
         elif hasattr(self._model, 'next'):
+            # Save and clear thinking blocks so the reranker doesn't interfere
+            # with the main agent loop's thinking round-trip
+            saved_thinking = getattr(self._model, '_thinking_blocks', None)
+            if saved_thinking is not None:
+                self._model._thinking_blocks = []
             msgs = [{"role": "user", "content": prompt}]
             step = self._model.next(msgs)
             response_text = getattr(step, 'content', '') or str(step)
+            # Clear thinking blocks from reranker call — they belong to a
+            # different conversation context
+            if hasattr(self._model, '_thinking_blocks'):
+                self._model._thinking_blocks = []
         else:
             raise RuntimeError("Model adapter must have generate() or next() method")
 

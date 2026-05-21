@@ -11,6 +11,7 @@ from minicode.api_retry import (
     RETRYABLE_STATUS,
     calculate_backoff,
 )
+from minicode.state import add_cost, record_api_error, update_context_usage
 from minicode.types import AgentStep, StepDiagnostics
 
 DEFAULT_MAX_RETRIES = 4
@@ -136,6 +137,7 @@ class AnthropicModelAdapter:
         # Cache the serialized tool list — tools rarely change within a session
         self._cached_tools_json: list[dict[str, Any]] | None = None
         self._tools_cache_key: int = 0  # hash of tool list for invalidation
+        self._thinking_blocks: list[dict[str, Any]] = []  # Preserve thinking blocks for round-trip
 
     def _get_serialized_tools(self) -> list[dict[str, Any]]:
         """Get serialized tool list with caching."""
@@ -155,12 +157,30 @@ class AnthropicModelAdapter:
 
     def next(self, messages: list[dict[str, Any]], on_stream_chunk: Callable[[str], None] | None = None, store: Store[AppState] | None = None) -> AgentStep:
         system_message, converted_messages = _to_anthropic_messages(messages)
+
+        # Replay stored thinking blocks into the first assistant message
+        # with text content (DeepSeek extended thinking round-trip)
+        if self._thinking_blocks:
+            for i in range(len(converted_messages)):
+                msg = converted_messages[i]
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", [])
+                    if isinstance(content, list):
+                        converted_messages[i] = dict(msg)
+                        converted_messages[i]["content"] = list(self._thinking_blocks) + content
+                        break
+            self._thinking_blocks = []
+
         request_body = {
             "model": self.runtime["model"],
             "system": system_message,
             "messages": converted_messages,
             "tools": self._get_serialized_tools(),
         }
+        # Disable extended thinking for non-Anthropic models that support it
+        # but require round-trip preservation our message format can't provide
+        if self.runtime.get("disableThinking"):
+            request_body["thinking"] = {"type": "disabled"}
         if self.runtime.get("maxOutputTokens") is not None:
             request_body["max_tokens"] = self.runtime["maxOutputTokens"]
         if on_stream_chunk:
@@ -185,22 +205,25 @@ class AnthropicModelAdapter:
         response = None
         for attempt in range(max_retries + 1):
             try:
-                response = urllib.request.urlopen(request, timeout=60)  # noqa: S310
+                timeout = int(os.environ.get("MINICODE_MODEL_TIMEOUT", "60"))
+                response = urllib.request.urlopen(request, timeout=timeout)
                 break
             except urllib.error.HTTPError as error:
                 response = error
                 if error.code not in RETRYABLE_STATUS or attempt >= max_retries:
                     break
+                # Use semantic error classification for adaptive backoff
+                from minicode.api_retry import classify_error
+                category = classify_error(error)
                 retry_after = _parse_retry_after_seconds(error.headers.get("retry-after"))
-                wait = calculate_backoff(attempt, retry_after=retry_after)
+                wait = calculate_backoff(attempt, retry_after=retry_after,
+                                        category=category)
                 time.sleep(wait)
             except urllib.error.URLError:
                 if attempt >= max_retries:
                     raise
                 wait = calculate_backoff(attempt)
                 time.sleep(wait)
-
-        if response is None:
             raise RuntimeError("Model request failed before receiving a response")
 
         if not on_stream_chunk:
@@ -247,6 +270,8 @@ class AnthropicModelAdapter:
                     text_parts.append(block["text"])
                 elif block_type == "tool_use" and isinstance(block.get("id"), str) and isinstance(block.get("name"), str):
                     tool_calls.append({"id": block["id"], "toolName": block["name"], "input": block.get("input")})
+                elif block_type == "thinking":
+                    self._thinking_blocks.append(block)  # Preserve for round-trip
                 else:
                     ignored_block_types.append(str(block_type))
     
@@ -273,6 +298,7 @@ class AnthropicModelAdapter:
         block_types = []
         ignored_block_types = []
         active_tool_call = None
+        active_thinking_block = None
         stop_reason = None
         
         # Streaming cost tracking
@@ -311,6 +337,8 @@ class AnthropicModelAdapter:
                         "name": cb.get("name"),
                         "input_json": ""
                     }
+                elif c_type == "thinking":
+                    active_thinking_block = {"type": "thinking", "thinking": ""}
             elif etype == "content_block_delta":
                 delta = event.get("delta", {})
                 d_type = delta.get("type")
@@ -321,6 +349,12 @@ class AnthropicModelAdapter:
                 elif d_type == "input_json_delta":
                     if active_tool_call:
                         active_tool_call["input_json"] += delta.get("partial_json", "")
+                elif d_type == "thinking_delta":
+                    if active_thinking_block:
+                        active_thinking_block["thinking"] += delta.get("thinking", "")
+                elif d_type == "signature_delta":
+                    if active_thinking_block:
+                        active_thinking_block["signature"] = active_thinking_block.get("signature", "") + delta.get("signature", "")
             elif etype == "content_block_stop":
                 if active_tool_call:
                     try:
@@ -333,6 +367,9 @@ class AnthropicModelAdapter:
                         "input": parsed_input
                     })
                     active_tool_call = None
+                if active_thinking_block:
+                    self._thinking_blocks.append(active_thinking_block)
+                    active_thinking_block = None
             elif etype == "message_delta":
                 delta = event.get("delta", {})
                 if "stop_reason" in delta:

@@ -14,11 +14,9 @@ This module implements:
 from __future__ import annotations
 
 import math
-import time
 from collections import deque
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Any
+from enum import Enum
 
 
 class HealthLevel(Enum):

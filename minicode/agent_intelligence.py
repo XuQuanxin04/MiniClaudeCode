@@ -1,4 +1,4 @@
-from enum import Enum, auto
+from enum import Enum
 from dataclasses import dataclass
 from typing import Any
 
@@ -285,6 +285,14 @@ class NudgeGenerator:
             base_message += " For command execution, consider using 'sudo' only if explicitly approved by the user."
         elif tool_name in ["write_file", "edit_file"] and category == ErrorCategory.LOGIC:
             base_message += " For file operations, verify the path exists and you have write permissions."
+        elif tool_name == "grep_files" and category == ErrorCategory.LOGIC:
+            base_message += " Try a broader pattern, or use list_files first to understand the directory structure."
+        elif tool_name == "read_file" and category in (ErrorCategory.LOGIC, ErrorCategory.RESOURCE):
+            base_message += " Verify the file path is correct. Use list_files or file_tree to confirm the file exists."
+        elif tool_name == "edit_file" and category == ErrorCategory.LOGIC:
+            base_message += " The search string may not match. Use grep_files to find the exact text you want to edit, then copy it verbatim."
+        elif category == ErrorCategory.TIMEOUT:
+            base_message += " Try breaking this into smaller steps or reducing the scope."
 
         return base_message
 

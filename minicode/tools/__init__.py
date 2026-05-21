@@ -15,7 +15,6 @@ from minicode.tools.git import git_tool
 from minicode.tools.grep_files import grep_files_tool
 from minicode.tools.list_files import list_files_tool
 from minicode.tools.load_skill import create_load_skill_tool
-from minicode.tools.modify_file import modify_file_tool
 from minicode.tools.patch_file import patch_file_tool
 from minicode.tools.read_file import read_file_tool
 from minicode.tools.run_command import run_command_tool
@@ -35,7 +34,7 @@ _CORE_TOOLS = [
     grep_files_tool,
     read_file_tool,
     write_file_tool,
-    modify_file_tool,
+    # modify_file_tool removed: identical to write_file (same _run/_validate)
     edit_file_tool,
     patch_file_tool,
     # Batch operations

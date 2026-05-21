@@ -183,13 +183,38 @@ def parse_input_chunk(chunk: str) -> ParseResult:
 
         # Escape sequence
         if char == '\x1b':
+            # Focus in/out: \x1b[I / \x1b[O
+            if chunk[i:i+3] == '\x1b[I':
+                events.append(KeyEvent(name='focus_in', ctrl=False, meta=False))
+                i += 3
+                continue
+            if chunk[i:i+3] == '\x1b[O':
+                events.append(KeyEvent(name='focus_out', ctrl=False, meta=False))
+                i += 3
+                continue
+
+            # Bracketed paste start: \x1b[200~
+            if chunk[i:i+6] == '\x1b[200~' and not maybe_need_more_for_escape_sequence(chunk[i+6:]):
+                i += 6
+                # Accumulate until paste end \x1b[201~
+                paste_end = chunk.find('\x1b[201~', i)
+                if paste_end >= 0:
+                    paste_text = chunk[i:paste_end]
+                    # Strip control characters except newline and tab
+                    paste_text = ''.join(c for c in paste_text if c.isprintable() or c in '\n\t')
+                    events.append(TextEvent(text=paste_text, ctrl=False))
+                    i = paste_end + 6  # Skip past \x1b[201~
+                    continue
+                else:
+                    break  # Need more input for paste end
+
             event, consumed = parse_escape_sequence(chunk[i:])
             if event:
                 events.append(event)
             i += consumed
             continue
 
-        # CR, LF, CR+LF -> return
+        # CR, CR+LF -> return.  Lone LF -> insert newline (Ctrl+J)
         if char == '\r':
             if i + 1 < len(chunk) and chunk[i+1] == '\n':
                 i += 2
@@ -199,7 +224,7 @@ def parse_input_chunk(chunk: str) -> ParseResult:
             continue
 
         if char == '\n':
-            events.append(KeyEvent(name='return', ctrl=False, meta=False))
+            events.append(TextEvent(text='\n', ctrl=False))
             i += 1
             continue
 

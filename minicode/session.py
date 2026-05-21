@@ -13,10 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -413,6 +412,11 @@ def delete_session(session_id: str) -> bool:
 
     try:
         session_path.unlink()
+        # Clean up orphaned delta files
+        delta_dir = _session_delta_dir(session_id)
+        if delta_dir.exists():
+            import shutil
+            shutil.rmtree(delta_dir, ignore_errors=True)
         index = _load_session_index()
         index.pop(session_id, None)
         _save_session_index(index)
