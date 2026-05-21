@@ -924,7 +924,7 @@ def run_agent_turn(
                     metrics_for_healing = {
                         "error_rate": tool_error_count / max(step, 1),
                         "context_usage": context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
-                        "oscillation_index": 0.0,  # 从反馈控制器获取
+                        "oscillation_index": feedback_controller._compute_oscillation() if feedback_controller else 0.0,
                     }
                     healing_actions = self_healing_engine.detect_and_heal(metrics_for_healing)
                     if healing_actions:

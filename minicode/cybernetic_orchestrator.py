@@ -99,6 +99,9 @@ class CyberneticOrchestrator:
         self.memory_pipeline: Any = None  # MemoryPipeline (unified facade)
         self.smart_router = None
         self.model_switcher = None
+        self.reflection = None
+        self._last_model: Any | None = None
+        self._workspace: str | None = None
 
         self._initialized = False
 
@@ -111,6 +114,7 @@ class CyberneticOrchestrator:
         runtime: dict | None = None,
     ) -> None:
         """Initialize all controllers. Call once at task start."""
+        self._last_model = model
         self.feedback = FeedbackController()
         self.cyber_supervisor = CyberneticSupervisor()
         self.stability = StabilityMonitor(window_size=100)
@@ -319,7 +323,13 @@ class CyberneticOrchestrator:
                 pass
 
         # AdaptivePIDTuner: periodic self-tuning
-        if self.adaptive_tuner and step > 0 and step % 20 == 0 and self.feedback:
+        if (
+            self.adaptive_tuner
+            and step > 0
+            and step % 20 == 0
+            and self.feedback
+            and "system_state" in summary
+        ):
             try:
                 stability_error = 1.0 - system_state.stability_score()
                 perf = system_state.performance_score()

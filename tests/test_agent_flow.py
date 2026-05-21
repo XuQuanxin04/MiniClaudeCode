@@ -121,6 +121,56 @@ class TestAgentFlowCybernetics:
         )
         assert len(result) > 0
 
+    def test_agent_loop_uses_orchestrator_hooks(
+        self, monkeypatch, mock_model, tools, messages, workspace, permissions
+    ):
+        """The agent loop should drive the unified orchestrator lifecycle."""
+        from minicode.cybernetic_orchestrator import CyberneticOrchestrator
+
+        calls: list[str] = []
+
+        def wrap(name):
+            original = getattr(CyberneticOrchestrator, name)
+
+            def _wrapped(self, *args, **kwargs):
+                calls.append(name)
+                return original(self, *args, **kwargs)
+
+            return _wrapped
+
+        for method in (
+            "wire_memory",
+            "wire_healing",
+            "inject_memories",
+            "step_start",
+            "step_end",
+            "reflect_on_task",
+        ):
+            monkeypatch.setattr(CyberneticOrchestrator, method, wrap(method))
+
+        messages.append({"role": "user", "content": "/ls"})
+        result = run_agent_turn(
+            model=mock_model,
+            tools=tools,
+            messages=messages,
+            cwd=str(workspace),
+            permissions=permissions,
+            context_manager=ContextManager(model="claude-sonnet-4-20250514"),
+            enable_work_chain=True,
+            max_steps=3,
+        )
+
+        assert len(result) > 0
+        for method in (
+            "wire_memory",
+            "wire_healing",
+            "inject_memories",
+            "step_start",
+            "step_end",
+            "reflect_on_task",
+        ):
+            assert method in calls
+
 
 class TestAgentMemoryPipeline:
     """Memory pipeline runs end-to-end within agent loop."""

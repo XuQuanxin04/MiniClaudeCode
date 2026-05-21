@@ -353,6 +353,100 @@ def _model_next(
     return model.next(messages, on_stream_chunk=on_stream_chunk)
 
 
+def _apply_control_signal(
+    *,
+    control_signal: Any,
+    system_state: Any,
+    max_steps: int | None,
+    tool_scheduler: ToolScheduler,
+    context_compactor: ContextCompactor | None,
+    model_switcher: Any | None,
+) -> int | None:
+    """Apply FeedbackController output to live runtime knobs."""
+    if not control_signal or control_signal.confidence <= 0.6:
+        return max_steps
+
+    if (
+        control_signal.limit_max_steps
+        and max_steps is not None
+        and control_signal.limit_max_steps < max_steps
+    ):
+        logger.info(
+            "FeedbackController: limiting max_steps %d -> %d",
+            max_steps, control_signal.limit_max_steps,
+        )
+        max_steps = control_signal.limit_max_steps
+
+    if control_signal.adjust_token_budget != 1.0:
+        if (
+            context_compactor
+            and hasattr(context_compactor, "_tool_budget")
+            and context_compactor._tool_budget
+        ):
+            new_budget = max(
+                1000,
+                int(
+                    context_compactor._tool_budget.budget_per_message
+                    * control_signal.adjust_token_budget
+                ),
+            )
+            context_compactor._tool_budget.budget_per_message = new_budget
+            logger.info(
+                "FeedbackController: token budget adjusted to %d (mult=%.2f)",
+                new_budget, control_signal.adjust_token_budget,
+            )
+
+    if control_signal.reduce_parallelism:
+        tool_scheduler._force_max_workers = min(
+            getattr(tool_scheduler, "_force_max_workers", 2) or 2,
+            2,
+        )
+        logger.info(
+            "FeedbackController: reduce_parallelism -> max_workers=2 "
+            "(oscillation=%.2f)",
+            control_signal.oscillation_index,
+        )
+
+    if control_signal.adjust_concurrency != 0:
+        cap = max(1, 4 + control_signal.adjust_concurrency)
+        tool_scheduler._force_max_workers = cap
+        logger.info(
+            "FeedbackController: adjust_concurrency=%+d -> max_workers=%d",
+            control_signal.adjust_concurrency, cap,
+        )
+
+    if control_signal.increase_model_level:
+        logger.info(
+            "FeedbackController: model upgrade recommended (errors=%.2f perf=%.2f)",
+            system_state.error_frequency,
+            system_state.performance_score(),
+        )
+        if model_switcher:
+            model_switcher._pending_upgrade = True
+
+    if control_signal.decrease_model_level:
+        logger.info(
+            "FeedbackController: model downgrade recommended (efficiency=%.2f)",
+            system_state.token_efficiency,
+        )
+
+    if control_signal.suggest_memory_persistence:
+        logger.info("FeedbackController: persisting working memory")
+        if context_compactor and hasattr(context_compactor, "_tool_budget"):
+            try:
+                context_compactor._tool_budget.flush()
+            except Exception:
+                pass
+
+    if control_signal.recommend_skill_update:
+        logger.info(
+            "FeedbackController: skill update recommended (pattern=%.2f)",
+            system_state.pattern_reuse_rate,
+        )
+
+    return max_steps
+
+
 def run_agent_turn(
     *,
     model: ModelAdapter,
@@ -508,6 +602,7 @@ def run_agent_turn(
         # 必须在 SelfHealingEngine 之前初始化，因为自愈引擎需要委托压缩操作
         context_compactor: ContextCompactor | None = None
         context_cybernetics: ContextCyberneticsOrchestrator | None = None
+        memory_mgr: MemoryManager | None = None
         if context_manager:
             compact_config = AutoCompactConfig(
                 threshold_ratio=0.85,
@@ -532,6 +627,12 @@ def run_agent_turn(
                 controller=memory_injection_ctrl,
                 reranker=memory_reranker,
             )
+            if orch:
+                orch._last_model = model
+                orch._workspace = cwd
+                orch.wire_memory(memory_mgr)
+                if orch.memory_pipeline is not None:
+                    memory_injector = getattr(orch.memory_pipeline, "_injector", memory_injector)
             # 记忆注入控制器：根据上下文压力决定注入策略
             if memory_injection_ctrl:
                 try:
@@ -554,7 +655,13 @@ def run_agent_turn(
                 except Exception:
                     pass
             # 执行实际记忆注入：将相关记忆注入到系统 prompt 中
-            if memory_injector and task:
+            if orch and task:
+                try:
+                    task_desc = task.raw_input if hasattr(task, 'raw_input') else ""
+                    current_messages = orch.inject_memories(task_desc, current_messages)
+                except Exception:
+                    pass
+            elif memory_injector and task:
                 try:
                     task_desc = task.raw_input if hasattr(task, 'raw_input') else ""
                     injected = memory_injector.inject_for_task(task_desc)
@@ -595,21 +702,32 @@ def run_agent_turn(
             if task and hasattr(task, 'parsed_intent') and task.parsed_intent:
                 context_cybernetics.set_intent(str(task.parsed_intent.intent_type))
             logger.info("ContextCybernetics initialized: PID control loop + predictive guard")
+            if orch:
+                orch.context_compactor = context_compactor
+                orch.context_cybernetics = context_cybernetics
 
         # 初始化自愈引擎（接收 cybernetics 引用用于 CONTEXT_OVERFLOW 委托）
-        self_healing_engine = SelfHealingEngine(
-            orchestrator=context_cybernetics,
-            tool_scheduler=tool_scheduler,
-            compactor=context_compactor,
-        )
+        if orch:
+            orch.wire_healing(tool_scheduler, context_compactor)
+            self_healing_engine = orch.healing
+        else:
+            self_healing_engine = SelfHealingEngine(
+                orchestrator=context_cybernetics,
+                tool_scheduler=tool_scheduler,
+                compactor=context_compactor,
+            )
         logger.info("Self-healing engine initialized: automated recovery + compaction delegation")
 
         # 初始化成本控制闭环 (CostTracker → PID → ToolResultBudgetManager)
-        cost_control = CostControlLoop(
-            target_cost_per_min=0.50,
-            kp=1.5, ki=0.08, kd=0.2,
-            enabled=True,
-        )
+        cost_control = orch.cost_control if orch else None
+        if cost_control is None:
+            cost_control = CostControlLoop(
+                target_cost_per_min=0.50,
+                kp=1.5, ki=0.08, kd=0.2,
+                enabled=True,
+            )
+        if orch:
+            orch.cost_control = cost_control
         logger.info("CostControlLoop initialized: BudgetPIDController for cost regulation")
 
     # 检查上下文状态 + 运行 Claude Code-style 预请求优化管线
@@ -678,7 +796,14 @@ def run_agent_turn(
             fire_hook_sync(HookEvent.AGENT_START, step=step, cwd=cwd)
 
             # 高级控制论闭环（每个 step 开始时执行）
-            if enable_work_chain:
+            if enable_work_chain and orch:
+                orch.step_start(
+                    context_manager=context_manager,
+                    step=step,
+                    tool_error_count=tool_error_count,
+                    saw_tool_result=saw_tool_result,
+                )
+            elif enable_work_chain:
                 # 状态观测：通过可测量输出估计系统内部状态
                 if state_observer:
                     measurement = MeasurementVector(
@@ -1157,38 +1282,56 @@ def run_agent_turn(
                     })
                     decoupling_controller.compute_decoupling_matrix()
 
-                # 自愈检测：检测并修复故障
-                if self_healing_engine:
-                    metrics_for_healing = {
-                        "error_rate": tool_error_count / max(step, 1),
-                        "context_usage": context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
-                        "oscillation_index": feedback_controller._compute_oscillation() if feedback_controller else 0.0,
-                    }
-                    healing_actions = self_healing_engine.detect_and_heal(metrics_for_healing)
-                    if healing_actions:
-                        logger.info("Self-healing triggered: %s", healing_actions[0].strategy)
-
-                # 进度控制：检测任务是否卡住或完成
-                if progress_controller:
-                    progress_signal = ProgressSignal(
-                        total_steps=max_steps,
-                        completed_steps=step - tool_error_count,
-                        failed_steps=tool_error_count,
-                        tool_calls=step,
-                        tool_errors=tool_error_count,
-                        output_changed=saw_tool_result,
-                        elapsed_seconds=step * 2.0,
+                if orch:
+                    step_summary = orch.step_end(
+                        tool_scheduler=tool_scheduler,
+                        context_manager=context_manager,
+                        step=step,
+                        tool_error_count=tool_error_count,
+                        saw_tool_result=saw_tool_result,
                         max_steps=max_steps,
                     )
-                    progress_decision = progress_controller.decide(progress_signal)
-                    if progress_decision.action in (ProgressAction.STOP, ProgressAction.REQUEST_CONFIRMATION):
-                        logger.warning(
-                            "ProgressController: action=%s health=%.2f stall=%.2f reasons=%s",
-                            progress_decision.action.value,
-                            progress_decision.health_score,
-                            progress_decision.stall_score,
-                            ", ".join(progress_decision.reasons),
+                    max_steps = _apply_control_signal(
+                        control_signal=step_summary.get("control_signal"),
+                        system_state=step_summary.get("system_state"),
+                        max_steps=max_steps,
+                        tool_scheduler=tool_scheduler,
+                        context_compactor=context_compactor,
+                        model_switcher=model_switcher,
+                    )
+                else:
+                    # 自愈检测：检测并修复故障
+                    if self_healing_engine:
+                        metrics_for_healing = {
+                            "error_rate": tool_error_count / max(step, 1),
+                            "context_usage": context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
+                            "oscillation_index": feedback_controller._compute_oscillation() if feedback_controller else 0.0,
+                        }
+                        healing_actions = self_healing_engine.detect_and_heal(metrics_for_healing)
+                        if healing_actions:
+                            logger.info("Self-healing triggered: %s", healing_actions[0].strategy)
+
+                    # 进度控制：检测任务是否卡住或完成
+                    if progress_controller:
+                        progress_signal = ProgressSignal(
+                            total_steps=max_steps,
+                            completed_steps=step - tool_error_count,
+                            failed_steps=tool_error_count,
+                            tool_calls=step,
+                            tool_errors=tool_error_count,
+                            output_changed=saw_tool_result,
+                            elapsed_seconds=step * 2.0,
+                            max_steps=max_steps,
                         )
+                        progress_decision = progress_controller.decide(progress_signal)
+                        if progress_decision.action in (ProgressAction.STOP, ProgressAction.REQUEST_CONFIRMATION):
+                            logger.warning(
+                                "ProgressController: action=%s health=%.2f stall=%.2f reasons=%s",
+                                progress_decision.action.value,
+                                progress_decision.health_score,
+                                progress_decision.stall_score,
+                                ", ".join(progress_decision.reasons),
+                            )
 
             # Tool execution completed for this step; ask the model for the next turn
             # instead of falling through to the max-step fallback.
@@ -1233,7 +1376,22 @@ def run_agent_turn(
             )
 
             # 任务后自省：提取经验教训
-            if reflection_engine and task:
+            if orch and task:
+                try:
+                    execution_trace: list[dict[str, Any]] = [
+                        {"type": "tool_call", "count": step},
+                        {"type": "error", "count": tool_error_count, "content": f"{tool_error_count} errors"} if tool_error_count > 0 else {},
+                        {"type": "assistant", "steps": step},
+                    ]
+                    orch.reflect_on_task(
+                        task_description=task.raw_input if hasattr(task, 'raw_input') else str(task.id),
+                        step=step,
+                        tool_error_count=tool_error_count,
+                        execution_trace=execution_trace,
+                    )
+                except Exception:
+                    pass
+            elif reflection_engine and task:
                 try:
                     execution_trace: list[dict[str, Any]] = [
                         {"type": "tool_call", "count": step},
