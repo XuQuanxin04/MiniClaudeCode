@@ -215,6 +215,7 @@ def _execute_single_tool(
     step: int,
     on_tool_start: Callable[[str, dict], None] | None,
     on_tool_result: Callable[[str, str, bool], None] | None,
+    tool_scheduler: Any | None = None,
 ) -> ToolResult:
     """Execute a single tool call with hooks, state updates, and crash protection.
     
@@ -240,7 +241,12 @@ def _execute_single_tool(
         # Execute the tool with timeout protection
         import concurrent.futures
         import os
-        TOOL_TIMEOUT = int(os.environ.get("MINICODE_TOOL_TIMEOUT", "120"))
+        _base_timeout = int(os.environ.get("MINICODE_TOOL_TIMEOUT", "120"))
+        TOOL_TIMEOUT = (
+            int(getattr(tool_scheduler, '_force_tool_timeout', _base_timeout))
+            if tool_scheduler and hasattr(tool_scheduler, '_force_tool_timeout')
+            else _base_timeout
+        )
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(
@@ -332,25 +338,27 @@ def _model_next(
     messages: list[ChatMessage],
     *,
     on_stream_chunk: Callable[[str], None] | None,
+    on_thinking_chunk: Callable[[str], None] | None = None,
     store: Store[AppState] | None,
 ) -> AgentStep:
-    """Call provider adapters with store support while preserving test doubles."""
-    if store is None:
-        return model.next(messages, on_stream_chunk=on_stream_chunk)
+    """Call provider adapters with store/thinking support while preserving test doubles."""
+    kwargs: dict[str, Any] = {"on_stream_chunk": on_stream_chunk}
 
     try:
-        signature = inspect.signature(model.next)
+        sig = inspect.signature(model.next)
+        param_names = set(sig.parameters.keys())
+        has_kwargs = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+        if has_kwargs or "on_thinking_delta" in param_names:
+            kwargs["on_thinking_delta"] = on_thinking_chunk
+        if has_kwargs or "store" in param_names:
+            kwargs["store"] = store
     except (TypeError, ValueError):
-        logger.warning("_model_next: inspect.signature failed, falling back without store")
-        return model.next(messages, on_stream_chunk=on_stream_chunk, store=store)
+        # Can't inspect signature (e.g. some mock objects) — be conservative
+        pass
 
-    supports_store = any(
-        parameter.kind == inspect.Parameter.VAR_KEYWORD or parameter.name == "store"
-        for parameter in signature.parameters.values()
-    )
-    if supports_store:
-        return model.next(messages, on_stream_chunk=on_stream_chunk, store=store)
-    return model.next(messages, on_stream_chunk=on_stream_chunk)
+    return model.next(messages, **kwargs)
 
 
 def _apply_control_signal(
@@ -361,6 +369,7 @@ def _apply_control_signal(
     tool_scheduler: ToolScheduler,
     context_compactor: ContextCompactor | None,
     model_switcher: Any | None,
+    feedback_controller: Any | None = None,
 ) -> int | None:
     """Apply FeedbackController output to live runtime knobs."""
     if not control_signal or control_signal.confidence <= 0.6:
@@ -443,6 +452,50 @@ def _apply_control_signal(
             "FeedbackController: skill update recommended (pattern=%.2f)",
             system_state.pattern_reuse_rate,
         )
+        # Queue skill update for next maintenance cycle
+        if not hasattr(tool_scheduler, '_pending_skill_update'):
+            tool_scheduler._pending_skill_update = True
+        logger.info("FeedbackController: skill update queued for next maintenance cycle")
+
+    if control_signal.reduce_tool_timeout:
+        new_timeout = max(5.0, control_signal.reduce_tool_timeout)
+        tool_scheduler._force_tool_timeout = new_timeout
+        logger.info(
+            "FeedbackController: tool timeout reduced to %.1fs (high error rate)",
+            new_timeout,
+        )
+    elif hasattr(tool_scheduler, '_force_tool_timeout'):
+        # Reset timeout when signal no longer active
+        del tool_scheduler._force_tool_timeout
+
+    if control_signal.increase_nudge_frequency:
+        tool_scheduler._force_nudge_frequency = True
+        logger.info(
+            "FeedbackController: nudge frequency increased (stability=%.2f)",
+            system_state.stability_score(),
+        )
+    elif hasattr(tool_scheduler, '_force_nudge_frequency'):
+        del tool_scheduler._force_nudge_frequency
+
+    if control_signal.promote_pattern:
+        if feedback_controller:
+            feedback_controller.record_pattern_effectiveness(
+                control_signal.promote_pattern, True
+            )
+            logger.info(
+                "FeedbackController: pattern promoted '%s'",
+                control_signal.promote_pattern,
+            )
+
+    if control_signal.force_compaction and context_compactor:
+        try:
+            compacted = context_compactor.compact_messages()
+            logger.info(
+                "FeedbackController: forced compaction completed (%d messages)",
+                len(compacted) if compacted else 0,
+            )
+        except Exception as exc:
+            logger.warning("FeedbackController: forced compaction failed: %s", exc)
 
     return max_steps
 
@@ -461,6 +514,7 @@ def run_agent_turn(
     on_assistant_message: Callable[[str], None] | None = None,
     on_progress_message: Callable[[str], None] | None = None,
     on_assistant_stream_chunk: Callable[[str], None] | None = None,
+    on_thinking_chunk: Callable[[str], None] | None = None,
     context_manager: ContextManager | None = None,
     runtime: dict | None = None,
     metrics_collector: AgentMetricsCollector | None = None,
@@ -891,6 +945,7 @@ def run_agent_turn(
                     model,
                     current_messages,
                     on_stream_chunk=on_assistant_stream_chunk,
+                    on_thinking_chunk=on_thinking_chunk,
                     store=store,
                 )
             except KeyboardInterrupt:
@@ -1096,7 +1151,7 @@ def run_agent_turn(
                     metrics_collector.start_tool(call["toolName"])
                 result = _execute_single_tool(
                     call, tools, cwd, permissions, runtime, store, step,
-                    on_tool_start, on_tool_result,
+                    on_tool_start, on_tool_result, tool_scheduler,
                 )
                 if metrics_collector:
                     metrics_collector.end_tool(
@@ -1157,7 +1212,7 @@ def run_agent_turn(
                             metrics_collector.start_tool(call["toolName"])
                         result = _execute_single_tool(
                             call, tools, cwd, permissions, runtime, store, step,
-                            on_tool_start, on_tool_result,
+                            on_tool_start, on_tool_result, tool_scheduler,
                         )
                         if metrics_collector:
                             metrics_collector.end_tool(
@@ -1218,6 +1273,14 @@ def run_agent_turn(
                     result_output = result.output + "\n\n[System note: " + nudge + "]"
                 else:
                     result_output = result.output
+                    # Increased nudge frequency: provide steering even on success
+                    if getattr(tool_scheduler, '_force_nudge_frequency', False):
+                        success_nudge = (
+                            f"Tool '{call['toolName']}' succeeded. "
+                            "The system is under stability pressure — prefer smaller, "
+                            "incremental steps and verify each result before proceeding."
+                        )
+                        result_output = result.output + "\n\n[System note: " + success_nudge + "]"
 
                 # Record conflicts between concurrent tools if both failed
                 if not result.ok and len(calls) > 1:
@@ -1298,6 +1361,7 @@ def run_agent_turn(
                         tool_scheduler=tool_scheduler,
                         context_compactor=context_compactor,
                         model_switcher=model_switcher,
+                        feedback_controller=feedback_controller,
                     )
                 else:
                     # 自愈检测：检测并修复故障
@@ -1604,6 +1668,46 @@ def run_agent_turn(
                 if control_signal.recommend_skill_update:
                     logger.info("FeedbackController: skill update recommended (pattern=%.2f)",
                                system_state.pattern_reuse_rate)
+                    if not hasattr(tool_scheduler, '_pending_skill_update'):
+                        tool_scheduler._pending_skill_update = True
+
+                if control_signal.reduce_tool_timeout:
+                    new_timeout = max(5.0, control_signal.reduce_tool_timeout)
+                    tool_scheduler._force_tool_timeout = new_timeout
+                    logger.info(
+                        "FeedbackController: tool timeout reduced to %.1fs",
+                        new_timeout,
+                    )
+                elif hasattr(tool_scheduler, '_force_tool_timeout'):
+                    del tool_scheduler._force_tool_timeout
+
+                if control_signal.increase_nudge_frequency:
+                    tool_scheduler._force_nudge_frequency = True
+                    logger.info(
+                        "FeedbackController: nudge frequency increased (stability=%.2f)",
+                        system_state.stability_score(),
+                    )
+                elif hasattr(tool_scheduler, '_force_nudge_frequency'):
+                    del tool_scheduler._force_nudge_frequency
+
+                if control_signal.promote_pattern:
+                    feedback_controller.record_pattern_effectiveness(
+                        control_signal.promote_pattern, True
+                    )
+                    logger.info(
+                        "FeedbackController: pattern promoted '%s'",
+                        control_signal.promote_pattern,
+                    )
+
+                if control_signal.force_compaction and context_compactor:
+                    try:
+                        compacted = context_compactor.compact_messages()
+                        logger.info(
+                            "FeedbackController: forced compaction (%d messages)",
+                            len(compacted) if compacted else 0,
+                        )
+                    except Exception as exc:
+                        logger.warning("FeedbackController: forced compaction failed: %s", exc)
 
             # 自适应PID调参：每20轮自动调节内外环PID参数
             if adaptive_pid_tuner and step > 0 and step % 20 == 0 and feedback_controller:

@@ -447,9 +447,28 @@ def render_banner(
 
 
 def render_status_line(status: str | None) -> str:
-    """Render the status line."""
+    """Render the status line with shimmer animation during thinking/waiting states."""
     t = theme()
     if status:
+        import time as _time
+        # Shimmer: animate a traveling highlight across the status text when thinking
+        is_thinking = "Thinking" in status
+        if is_thinking:
+            tick = int(_time.monotonic() * 3)  # 3 Hz shimmer sweep
+            plain = f"  {status}"
+            width = len(plain)
+            if width > 3:
+                pos = tick % (width + 6) - 3  # Sweep from -3 to width
+                shimmered = ""
+                for i, ch in enumerate(plain):
+                    dist = abs(i - pos)
+                    if dist == 0:
+                        shimmered += f"{t.bold}{t.assistant}{ch}{t.reset}"
+                    elif dist == 1:
+                        shimmered += f"{t.assistant}{ch}{t.reset}"
+                    else:
+                        shimmered += f"{t.tool}{ch}{t.reset}"
+                return f"{t.bold}{ICON_RUNNING}{t.reset}{shimmered}"
         return f"{t.tool}{t.bold}{ICON_RUNNING} {status}{t.reset}"
     return f"{t.assistant}{ICON_SUCCESS} Ready{t.reset}"
 
