@@ -164,6 +164,7 @@ class OpenAIModelAdapter:
         self,
         messages: list[dict[str, Any]],
         on_stream_chunk: Callable[[str], None] | None = None,
+        on_thinking_delta: Callable[[str], None] | None = None,
         store: Store[AppState] | None = None,
     ) -> AgentStep:
         system_message, converted_messages = _to_openai_messages(messages)

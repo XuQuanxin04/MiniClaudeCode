@@ -155,7 +155,7 @@ class AnthropicModelAdapter:
             self._tools_cache_key = current_key
         return self._cached_tools_json
 
-    def next(self, messages: list[dict[str, Any]], on_stream_chunk: Callable[[str], None] | None = None, store: Store[AppState] | None = None) -> AgentStep:
+    def next(self, messages: list[dict[str, Any]], on_stream_chunk: Callable[[str], None] | None = None, on_thinking_delta: Callable[[str], None] | None = None, store: Store[AppState] | None = None) -> AgentStep:
         system_message, converted_messages = _to_anthropic_messages(messages)
 
         # Replay stored thinking blocks into the first assistant message
@@ -351,7 +351,10 @@ class AnthropicModelAdapter:
                         active_tool_call["input_json"] += delta.get("partial_json", "")
                 elif d_type == "thinking_delta":
                     if active_thinking_block:
-                        active_thinking_block["thinking"] += delta.get("thinking", "")
+                        chunk = delta.get("thinking", "")
+                        active_thinking_block["thinking"] += chunk
+                        if on_thinking_delta:
+                            on_thinking_delta(chunk)
                 elif d_type == "signature_delta":
                     if active_thinking_block:
                         active_thinking_block["signature"] = active_thinking_block.get("signature", "") + delta.get("signature", "")

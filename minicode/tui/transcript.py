@@ -372,16 +372,30 @@ def render_transcript(
     return _interleave_scrollbar(indicator, scrollbar)
 
 
+# 8-segment Unicode blocks for sub-character scrollbar precision
+# ' ' (0/8) → '▏' (1/8) → '▎' (2/8) → '▍' (3/8) → '▌' (4/8) → '▋' (5/8) → '▊' (6/8) → '▉' (7/8) → '█' (8/8)
+_SCROLLBAR_BLOCKS = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
+
+
 def _render_scrollbar(offset: int, max_offset: int, height: int) -> list[str]:
-    """Render a vertical scrollbar as a list of characters, one per line."""
+    """Render a vertical scrollbar with 8-segment Unicode block precision."""
     if max_offset <= 0 or height < 3:
         return [" "] * max(1, height)
-    # Thumb position (0 = top)
-    pos = int((offset / max_offset) * (height - 1))
+    # Thumb position with sub-character precision
+    ratio = offset / max_offset
+    precise_pos = ratio * (height - 1)
+    whole = int(precise_pos)
+    remainder = precise_pos - whole
+    part_idx = int(remainder * 8)  # 0-8, map to _SCROLLBAR_BLOCKS
+
     bar = []
     for i in range(height):
-        if i == pos:
-            bar.append("█")
+        if i < whole:
+            bar.append("░")  # above thumb
+        elif i == whole:
+            bar.append(_SCROLLBAR_BLOCKS[part_idx])  # partial block for smooth position
+        elif i == whole + 1 and part_idx > 0:
+            bar.append(_SCROLLBAR_BLOCKS[8 - part_idx])  # complementary block below thumb
         elif i == 0 and offset > 0:
             bar.append("▲")
         elif i == height - 1 and offset < max_offset:

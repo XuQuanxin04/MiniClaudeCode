@@ -587,6 +587,19 @@ def _handle_input(
 
     args.permissions.begin_turn()
     
+    active_thinking_entry_id = None
+
+    def on_thinking_chunk(content: str) -> None:
+        nonlocal active_thinking_entry_id
+        if active_thinking_entry_id is None:
+            active_thinking_entry_id = _push_transcript_entry(
+                state, kind="progress", body=f"∴ Thinking…\n{content}"
+            )
+        else:
+            _append_to_transcript_entry(state, active_thinking_entry_id, content)
+        state.transcript_scroll_offset = 0
+        rerender()
+
     # Run agent turn in background thread to keep UI responsive
     agent_error = None
     agent_result: dict = {"messages": None}
@@ -606,6 +619,7 @@ def _handle_input(
                 on_assistant_message=on_assistant_message,
                 on_progress_message=on_progress_message,
                 on_assistant_stream_chunk=on_assistant_stream_chunk,
+                on_thinking_chunk=on_thinking_chunk,
                 store=state.app_state,
                 context_manager=args.context_manager,
                 runtime=args.runtime,
