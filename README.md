@@ -1,174 +1,104 @@
 # MiniCode Python
 
-<p align="center">
-  <strong>A self-regulating Python coding agent for local development.</strong>
-</p>
+A local Python coding agent for reading code, planning changes, editing files, running development commands, managing context pressure, and explaining its own workflow.
 
-<p align="center">
-  <a href="./README.zh-CN.md">简体中文</a>
-  ·
-  <a href="https://github.com/LiuMengxuan04/MiniCode">MiniCode Main Repo</a>
-  ·
-  <a href="https://github.com/QUSETIONS/MiniCode-Python">Python Repo</a>
-</p>
+[中文说明](./README.zh-CN.md) | [学习文档](./学习文档.md) | [项目介绍](./项目介绍.md)
 
-<p align="center">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-738%20passed-brightgreen?style=flat-square">
-  <img alt="Package" src="https://img.shields.io/badge/package-minicode--py-555?style=flat-square">
-</p>
+## What This Fork Adds
 
-MiniCode Python is the Python implementation in the MiniCode family. The main
-project is [LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode);
-this repository explores a Python-first agent runtime with cybernetic control,
-adaptive memory, and a testable local tool loop.
+This repository is a learning fork built on top of MiniCode Python. It keeps the original local coding-agent idea, then adds several features that make the project easier to study and safer to operate:
 
-Instead of treating context pressure, tool failures, memory noise, and cost
-drift as prompt-only problems, MiniCode Python measures them during execution
-and feeds those signals back into runtime decisions.
+- Plan mode: use `/plan` to let the agent inspect the project and produce an implementation plan before it is allowed to edit files or run non-read-only commands.
+- Execution mode: use `/execute` to return to normal reviewed execution after you approve the plan.
+- Checkpoints: MiniCode-managed file edits create workspace-local snapshots under `.mini-code-checkpoints/`, and `/checkpoint rollback <id>` can restore previous file states.
+- Explainable context compaction: context management now reports an L1/L2/L3 strategy instead of acting like a black box.
+- DeepSeek support: DeepSeek direct API is supported through the existing OpenAI-compatible adapter with `DEEPSEEK_API_KEY` and `https://api.deepseek.com`.
+- Beginner-facing documentation: [学习文档.md](./学习文档.md) explains how the agent is assembled step by step; [项目介绍.md](./项目介绍.md) explains the module design and engineering flow.
 
-## Why It Exists
+## Public Open-Source Ideas Referenced
 
-Most coding agents are model wrappers: prompt in, tool calls out, hope the loop
-stays healthy. MiniCode Python is built around a different idea:
-
-> a coding agent should observe itself while it works, then adjust its own
-> context, memory, verification, concurrency, and recovery behavior.
-
-That makes this repository useful as:
-
-- a local coding-agent implementation you can inspect end to end;
-- a Python research bed for agent control, memory, and verification loops;
-- a companion implementation to the TypeScript MiniCode main repo;
-- a practical place to test ideas before they become larger platform features.
-
-## Highlights
-
-| Area | What MiniCode Python Adds |
-| --- | --- |
-| Runtime control | `CyberneticOrchestrator` coordinates context, cost, feedback, progress, memory, and recovery controllers. |
-| Context management | PID-style context pressure handling, compaction, budget adjustment, and predictive guards. |
-| Memory | Domain-aware retrieval, optional LLM reranking, prompt injection, reflection write-back, and maintenance. |
-| Tool loop | Local file/search/edit/command tools with scheduler-aware execution and error nudges. |
-| Recovery | Self-healing paths for context overflow, tool failures, oscillation, and resource pressure. |
-| Verification | Focused unit, integration, stress, and cybernetics tests across the active root package. |
-
-## Architecture
-
-```mermaid
-flowchart LR
-    User["User task"] --> Loop["agent_loop.py"]
-    Loop --> Tools["Local tools<br/>files, search, edit, shell"]
-    Tools --> Loop
-
-    Loop --> Sensors["Sensors<br/>context, cost, errors, progress"]
-    Sensors --> Orchestrator["CyberneticOrchestrator"]
-    Orchestrator --> Control["Controllers<br/>PID, Kalman, prediction,<br/>memory, model, progress"]
-    Control --> Actions["Runtime actions<br/>compact, cap concurrency,<br/>adjust budget, inject memory,<br/>recover, reflect"]
-    Actions --> Loop
-```
-
-The main loop now drives the orchestrator lifecycle directly:
-
-- `wire_memory()`
-- `wire_healing()`
-- `inject_memories()`
-- `step_start()`
-- `step_end()`
-- `reflect_on_task()`
-
-This keeps controller initialization, memory injection, per-step observation,
-feedback, self-healing, and post-task reflection tied to the same runtime
-surface.
-
-## Repository Status
-
-The active package is the root package configured in `pyproject.toml`.
-
-| Path | Role |
-| --- | --- |
-| `minicode/` | Canonical Python package used by install and tests. |
-| `tests/` | Active test suite. |
-| `py-src/minicode/` | Compatibility/staging mirror kept aligned for migration work. |
-| `docs/OPTIMIZATION_SUMMARY.md` | Full optimization and integration record. |
-| `docs/memory_theory.md` | Memory/control theory notes. |
-
-The main TypeScript repository may include this project as
-`external/MiniCode-Python`, but this Python package is installed and verified
-from this repository root.
+- [Cline](https://github.com/cline/cline): Plan/Act workflow, human-reviewed edits, checkpoints, and broad provider support.
+- [Roo Code](https://github.com/RooCodeInc/Roo-Code): mode-oriented workflows such as Code, Architect, Ask, and Debug.
+- [Aider](https://github.com/Aider-AI/aider): Git-friendly recovery thinking and the idea that AI edits should be easy to diff and undo.
+- [OpenHands](https://github.com/OpenHands/OpenHands): agent runtime as a composable system with CLI, SDK, and local GUI surfaces.
+- [DeepSeek API Docs](https://api-docs.deepseek.com/): OpenAI-compatible API configuration and current DeepSeek model access.
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/QUSETIONS/MiniCode-Python.git
-cd MiniCode-Python
 python -m pip install -e .[dev]
-```
-
-Run the CLI:
-
-```bash
-minicode-py
-```
-
-Or run the module directly:
-
-```bash
 python -m minicode.main
+```
+
+Set a model provider before real model calls. For DeepSeek:
+
+```bash
+set DEEPSEEK_API_KEY=sk-...
+set MINI_CODE_MODEL=deepseek-v4-flash
+python -m minicode.main
+```
+
+PowerShell example:
+
+```powershell
+$env:DEEPSEEK_API_KEY = "sk-..."
+$env:MINI_CODE_MODEL = "deepseek-v4-flash"
+python -m minicode.main
+```
+
+## Important Commands
+
+| Command | Purpose |
+| --- | --- |
+| `/plan` | Switch to read-only planning mode. |
+| `/execute` | Switch back to normal execution mode. |
+| `/mode` | Show current permission mode and statistics. |
+| `/mode plan` | Switch mode explicitly. |
+| `/checkpoint list` | List saved checkpoints. |
+| `/checkpoint show <id>` | Inspect one checkpoint. |
+| `/checkpoint rollback <id>` | Restore files to the state captured before a MiniCode-managed edit. |
+| `/context` | Show context status; the compactor reports L1/L2/L3 responsibilities. |
+| `/model deepseek` | List DeepSeek direct API models. Prefer `deepseek-v4-flash` / `deepseek-v4-pro`; legacy `deepseek-chat` and `deepseek-reasoner` are kept for compatibility. |
+
+## Architecture
+
+```mermaid
+flowchart TD
+    User["User request"] --> Entry["main.py / TUI / headless"]
+    Entry --> Config["config.py"]
+    Entry --> Prompt["prompt.py"]
+    Entry --> Permissions["permissions.py + auto_mode.py"]
+    Entry --> Tools["ToolRegistry + tools/"]
+    Entry --> Model["model_registry.py"]
+    Model --> Anthropic["Anthropic adapter"]
+    Model --> OpenAI["OpenAI-compatible adapter\nOpenAI / OpenRouter / DeepSeek / Custom"]
+    Prompt --> Loop["agent_loop.py"]
+    Permissions --> Tools
+    Tools --> Loop
+    Loop --> Context["context_manager.py\ncontext_compactor.py"]
+    Loop --> Memory["memory.py"]
+    Context --> Loop
+    Memory --> Prompt
+    Tools --> Checkpoint[".mini-code-checkpoints"]
 ```
 
 ## Verification
 
-The current root package was verified with:
+The changed Python modules compile with:
 
 ```bash
-python -m compileall -q minicode py-src\minicode tests
-pytest -q
+python -m py_compile minicode/auto_mode.py minicode/permissions.py minicode/cli_commands.py minicode/checkpoints.py minicode/model_registry.py minicode/config.py
 ```
 
-Latest local result:
+The test suite uses the optional dev dependency:
 
-```text
-738 passed, 2 skipped, 3 warnings
+```bash
+python -m pip install -e .[dev]
+python -m pytest tests/test_permissions.py tests/test_cli_commands.py tests/test_checkpoints.py tests/test_context_compactor.py tests/test_config.py -q
 ```
 
-The warnings are unregistered `pytest.mark.benchmark` markers in benchmark
-tests. They do not indicate failing behavior.
+## Repository Lineage
 
-## Core Modules
-
-| Module | Purpose |
-| --- | --- |
-| `minicode/agent_loop.py` | Main model/tool loop and runtime control integration. |
-| `minicode/cybernetic_orchestrator.py` | Facade for controller lifecycle hooks. |
-| `minicode/context_cybernetics.py` | Context sensing, PID control, and compaction loop. |
-| `minicode/feedback_controller.py` | Outer-loop system-state to control-signal mapping. |
-| `minicode/self_healing_engine.py` | Fault detection and recovery delegation. |
-| `minicode/memory_pipeline.py` | Unified memory read/inject/write/maintain facade. |
-| `minicode/memory_reranker.py` | LLM-backed memory curation. |
-| `minicode/domain_classifier.py` | Task and file-domain inference. |
-| `minicode/model_registry.py` | Model selection controller. |
-| `minicode/progress_controller.py` | Task health and stall detection. |
-
-## MiniCode Family
-
-| Version | Repository | Focus |
-| --- | --- | --- |
-| TypeScript | [LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode) | Mainline terminal agent, TUI, MCP, skills, sessions, context controls. |
-| Python | [QUSETIONS/MiniCode-Python](https://github.com/QUSETIONS/MiniCode-Python) | Cybernetic Python runtime, memory pipeline, verification-oriented experiments. |
-| Rust | [harkerhand/MiniCode-rs](https://github.com/harkerhand/MiniCode-rs/tree/master) | Rust implementation and systems-side experimentation. |
-| Java | [hobbescalvin414-tech/minicode4j](https://github.com/hobbescalvin414-tech/minicode4j/tree/feat/default-ts-ui) | Java implementation with a TypeScript-style UI direction. |
-
-## Documentation
-
-- [Optimization Summary](./docs/OPTIMIZATION_SUMMARY.md)
-- [Memory Theory](./docs/memory_theory.md)
-- [Main MiniCode Repository](https://github.com/LiuMengxuan04/MiniCode)
-
-## Design Principles
-
-- Keep the agent loop inspectable.
-- Prefer measured runtime signals over hidden prompt magic.
-- Apply bounded actions: compact, cap, adjust, recover, reflect.
-- Treat verification and evidence as part of the agent runtime.
-- Keep the Python implementation useful as both software and research scaffold.
+- Main MiniCode project: [LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode)
+- MiniCode Python base: [QUSETIONS/MiniCode-Python](https://github.com/QUSETIONS/MiniCode-Python)
+- This repository: a learning fork focused on source reading, documentation, and cautious local-agent upgrades.

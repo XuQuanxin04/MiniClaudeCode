@@ -235,20 +235,28 @@ class CyberneticAblationRunner:
         return data
 
     def write_outputs(self, output_dir: str | Path, data: dict[str, Any]) -> dict[str, Path]:
+        # Step 1: 实验输出目录不存在就创建，保证 harness 可以在干净环境里直接运行。
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)
         summary_json = output / "summary.json"
         summary_md = output / "summary.md"
+        # Step 2: JSON 给脚本/图表/CI 继续分析，保留完整结构化数据。
         summary_json.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        # Step 3: Markdown 给人读，适合汇报、项目文档和简历佐证。
         summary_md.write_text(format_ablation_report(data), encoding="utf-8")
         return {"json": summary_json, "markdown": summary_md}
 
     def _run_baseline(self, task: AblationTaskProfile) -> AblationArmResult:
+        # Step 1: baseline 代表“没有自适应控制器”的固定策略，用它做对照组。
         verification_strength = 0.35 if task.coverage_sensitive else 0.20
+        # Step 2: worker 数只按工具调用量和固定上限决定，不根据错误率/延迟动态调整。
         max_workers = max(1, min(task.tool_calls, 4))
+        # Step 3: baseline 假设上下文会随工具调用自然膨胀，没有记忆/压缩控制主动干预。
         context_peak = min(1.0, task.context_usage + 0.08 + 0.01 * task.tool_calls)
+        # Step 4: 并发越高，工具错误率越可能增加；baseline 不会主动降并发。
         tool_error_rate = min(1.0, task.tool_error_rate + 0.08 + 0.02 * max(0, max_workers - 2))
         intervention_count = 0
+        # Step 5: completion_score 用统一公式计算，保证 baseline 和 cybernetic 可公平比较。
         completion = self._completion_score(
             task,
             tool_error_rate=tool_error_rate,
@@ -257,6 +265,7 @@ class CyberneticAblationRunner:
             intervention_count=intervention_count,
         )
         return AblationArmResult(
+            # Step 6: baseline 结果也写完整指标，后续 summary 才能逐项做差值分析。
             task_id=task.task_id,
             arm="baseline",
             completion_score=completion,
@@ -274,6 +283,7 @@ class CyberneticAblationRunner:
         )
 
     def _run_cybernetic(self, task: AblationTaskProfile) -> AblationArmResult:
+        # Step 1: cybernetic 组启用验证控制器，根据任务是否敏感、是否失败过来决定验证强度。
         verification = self.verification.plan(VerificationSignal(
             changed_files=list(task.changed_files),
             intent_type=task.intent_type,
@@ -283,6 +293,7 @@ class CyberneticAblationRunner:
             previous_verification_failed=task.tests_passed is False,
             coverage_sensitive=task.coverage_sensitive,
         ))
+        # Step 2: 工具调度控制器根据调用数量、写操作、命令、错误率和延迟动态决定并发策略。
         tool_decision = self.tools.decide(ToolSchedulingSignal(
             call_count=task.tool_calls,
             write_count=task.write_count,
@@ -291,6 +302,7 @@ class CyberneticAblationRunner:
             avg_latency=task.avg_latency,
             recent_failures=task.recent_failures,
         ))
+        # Step 3: 记忆注入控制器根据上下文压力和检索质量决定少注入、正常注入还是更严格过滤。
         memory_decision = self.memory.decide(
             MemoryInjectionSignal(
                 context_usage=task.context_usage,
@@ -302,6 +314,7 @@ class CyberneticAblationRunner:
             base_min_relevance=0.30,
             base_max_tokens=200,
         )
+        # Step 4: 模型选择控制器根据复杂度、预算压力、延迟压力和长上下文需求选择推理强度。
         model_decision = self.models.decide(ModelSelectionSignal(
             task_complexity=task.complexity,
             budget_pressure=max(0.0, task.context_usage - 0.50),
@@ -309,6 +322,7 @@ class CyberneticAblationRunner:
             recent_failures=task.recent_failures,
             requires_long_context=task.requires_long_context,
         ))
+        # Step 5: 进度控制器观察完成步数、失败步数、测试状态，判断继续、停止或请求确认。
         progress = self.progress.decide(ProgressSignal(
             total_steps=task.total_steps,
             completed_steps=task.completed_steps,
@@ -319,6 +333,7 @@ class CyberneticAblationRunner:
             tests_passed=task.tests_passed,
             max_steps=10,
         ))
+        # Step 6: supervisor 汇总各控制器快照，给出整体风险视图。
         supervisor_report = self.supervisor.report([
             self.supervisor.snapshot_from_tool_decision(tool_decision.to_dict()),
             self.supervisor.snapshot_from_decision("verification", verification.to_dict()),
@@ -326,10 +341,12 @@ class CyberneticAblationRunner:
             self.supervisor.snapshot_from_decision("progress", progress.to_dict()),
         ])
 
+        # Step 7: cybernetic 的上下文峰值受记忆注入模式影响，严格模式会少占上下文。
         context_peak = max(
             0.0,
             min(1.0, task.context_usage + self._memory_context_delta(memory_decision.mode.value)),
         )
+        # Step 8: 错误率会因为降并发、处理失败经验等控制动作而下降。
         tool_error_rate = max(
             0.0,
             task.tool_error_rate
@@ -338,6 +355,7 @@ class CyberneticAblationRunner:
             - 0.02 * min(task.recent_failures, 3),
         )
         verification_strength = self._verification_strength(verification.mode.value)
+        # Step 9: 统计有多少控制器做了非默认干预，作为“自适应动作强度”的指标。
         intervention_count = sum(
             1
             for action in (
@@ -348,6 +366,7 @@ class CyberneticAblationRunner:
             )
             if action not in {"none", "standard", "continue", 1.0}
         )
+        # Step 10: 用与 baseline 相同的 completion 公式计算结果，唯一差别来自控制器决策。
         completion = self._completion_score(
             task,
             tool_error_rate=tool_error_rate,
@@ -356,6 +375,7 @@ class CyberneticAblationRunner:
             intervention_count=intervention_count,
         )
         return AblationArmResult(
+            # Step 11: cybernetic 结果记录每个控制器的具体决策，方便解释“为什么指标变化”。
             task_id=task.task_id,
             arm="cybernetic",
             completion_score=completion,

@@ -958,13 +958,14 @@ class MemoryManager:
         *,
         project_root: str | Path | None = None,
     ):
-        # Backward compatibility: older call sites pass `project_root=...`.
+        # Step 1: 兼容旧调用方的 project_root 参数，统一解析成本次工作区路径。
         resolved_workspace = workspace if workspace is not None else project_root
         if resolved_workspace is None:
             resolved_workspace = Path.cwd()
 
         self.workspace = str(resolved_workspace)
         self.paths = MemoryPaths.for_workspace(self.workspace)
+        # Step 2: 记忆分三层：USER 跨项目，PROJECT 项目共享，LOCAL 本机/本目录私有。
         self.memories: dict[MemoryScope, MemoryFile] = {
             MemoryScope.USER: MemoryFile(scope=MemoryScope.USER),
             MemoryScope.PROJECT: MemoryFile(scope=MemoryScope.PROJECT),
@@ -975,6 +976,7 @@ class MemoryManager:
     def _load_all(self) -> None:
         """Load all memory files."""
         for scope in MemoryScope:
+            # Step 3: 每层记忆分别加载和修复，单层损坏不会影响其他层。
             self._load_scope(scope)
             self._auto_recover_scope(scope)
     
@@ -1282,15 +1284,15 @@ class MemoryManager:
         """
         results = []
 
+        # Step 1: 如果指定 scope，只查那一层；否则三层记忆一起参与排序。
         scopes_to_search = [scope] if scope else list(MemoryScope)
 
         for s in scopes_to_search:
             results.extend(self.memories[s].search(query, active_domains=active_domains))
 
-        # Apply minimum relevance threshold
-        # (entries are already scored by MemoryFile.search)
+        # Step 2: MemoryFile.search 已经做初步排序，这里再按相对分数过滤低相关记忆。
         if min_relevance > 0:
-            # Normalize scores to 0-1 range for threshold comparison
+            # Step 3: 用本次搜索最高分归一化，避免不同查询之间分数尺度不一致。
             if results:
                 max_score = max(
                     self._score_entry(e, _tokenize(query)) for e in results
@@ -1301,8 +1303,7 @@ class MemoryManager:
                         if self._score_entry(e, _tokenize(query)) / max_score >= min_relevance
                     ]
 
-        # Results are already ranked by MemoryFile.search()
-        # Deduplicate by content (keep highest-scored)
+        # Step 4: 按内容去重，防止同一条记忆在不同文件或重复写入后反复进入 prompt。
         seen_content: set[str] = set()
         deduped = []
         for entry in results:
@@ -1366,14 +1367,17 @@ class MemoryManager:
 
         query = (query or "").strip()
         if query:
+            # Step 1: 有用户问题时走“相关记忆检索”，只把和当前问题有关的记忆注入 system prompt。
             scoped_parts = []
             total_tokens = 0
+            # Step 2: 优先 LOCAL，再 PROJECT，最后 USER；越靠前越贴近当前项目现场。
             for scope in [MemoryScope.LOCAL, MemoryScope.PROJECT, MemoryScope.USER]:
                 entries = self.search(query, scope=scope, limit=max_entries, min_relevance=0.0)
                 if not entries:
                     continue
                 accepted_entries: list[MemoryEntry] = []
                 for entry in entries[:max_entries]:
+                    # Step 3: 每加入一条都重新估算 token，避免记忆注入本身挤爆上下文。
                     candidate_memory = MemoryFile(scope=scope, entries=[*accepted_entries, entry])
                     candidate = candidate_memory.format_as_markdown(include_header=True)
                     candidate_tokens = estimate_tokens(candidate)
@@ -1381,8 +1385,7 @@ class MemoryManager:
                         accepted_entries.append(entry)
                         continue
                     if not accepted_entries:
-                        # Skip an oversized match instead of blocking lower-priority
-                        # scopes that may have compact, relevant context.
+                        # Step 4: 单条过大的记忆直接跳过，不让它挡住后面更短、更相关的记忆。
                         continue
                     break
                 if not accepted_entries:
@@ -1397,7 +1400,7 @@ class MemoryManager:
         parts = []
         total_tokens = 0
         
-        # Priority order: LOCAL > PROJECT > USER
+        # Step 5: 没有具体 query 时，注入通用背景；仍按 LOCAL > PROJECT > USER 的贴近程度排序。
         for scope in [MemoryScope.LOCAL, MemoryScope.PROJECT, MemoryScope.USER]:
             memory = self.memories[scope]
             if not memory.entries:
@@ -1410,7 +1413,7 @@ class MemoryManager:
                 parts.append(formatted)
                 total_tokens += tokens
             else:
-                # Partial: include only recent entries
+                # Step 6: 某层完整记忆太大时，只取最近 max_entries 条，保留最可能仍有效的背景。
                 remaining_tokens = max_tokens - total_tokens
                 partial_entries = memory.entries[-max_entries:]
                 partial_memory = MemoryFile(scope=scope, entries=partial_entries)
@@ -1459,7 +1462,14 @@ class MemoryManager:
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                 f.write(content)
-            os.replace(tmp_path, str(target))
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, str(target))
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
         except BaseException:
             # Clean up temp file on any failure
             try:
@@ -1549,24 +1559,29 @@ class MemoryManager:
             return None
 
         content = ""
+        # Step 1: 默认写 PROJECT 记忆，因为聊天里说“记住”通常是当前项目约定。
         scope = MemoryScope.PROJECT
         category = "note"
 
         if raw.startswith("#"):
+            # Step 2: # xxx 是最短记忆语法，适合快速记录项目规则或用户偏好。
             content = raw[1:].strip()
             category = "directive"
         elif raw.startswith("/memory add "):
+            # Step 3: /memory add 支持显式 scope，让用户决定记忆作用范围。
             content = raw[len("/memory add ") :].strip()
             scope_match = re.match(r"^(user|project|local)\s*:\s*(.+)$", content, flags=re.I)
             if scope_match:
                 scope = MemoryScope(scope_match.group(1).lower())
                 content = scope_match.group(2).strip()
         else:
+            # Step 4: 普通聊天不是记忆命令，返回 None 让主流程继续交给 Agent。
             return None
 
         if not content:
             return "Usage: # <memory> or /memory add [user|project|local:] <memory>"
 
+        # Step 5: 真正写入磁盘前统一走 add_entry，确保 id、时间戳、索引和持久化逻辑一致。
         entry = self.add_entry(scope, category, content, tags=["chat"])
         return f"Saved memory ({entry.scope.value}): {entry.content}"
 

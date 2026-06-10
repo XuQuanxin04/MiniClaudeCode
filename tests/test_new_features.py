@@ -25,6 +25,7 @@ from minicode.context_manager import (
     load_context_state,
     save_context_state,
 )
+from minicode.cost_tracker import calculate_cost
 from minicode.memory import (
     MemoryEntry,
     MemoryFile,
@@ -82,6 +83,13 @@ def test_context_manager_initial_stats():
     assert stats.usage_percentage == 0.0
 
 
+def test_context_manager_uses_deepseek_direct_window():
+    """DeepSeek direct models should not fall back to the default 128K window."""
+    manager = ContextManager(model="deepseek-v4-flash")
+
+    assert manager.context_window == 1_000_000
+
+
 def test_context_manager_add_messages():
     """Test adding messages updates stats."""
     manager = ContextManager(model="default")
@@ -90,6 +98,13 @@ def test_context_manager_add_messages():
     stats = manager.get_stats()
     assert stats.messages_count == 1
     assert stats.total_tokens > 0
+
+
+def test_deepseek_direct_cost_uses_specific_pricing():
+    """DeepSeek direct models should not be billed with the generic fallback."""
+    cost = calculate_cost("deepseek-v4-flash", input_tokens=1_000_000, output_tokens=1_000_000)
+
+    assert cost == pytest.approx(0.42)
 
 
 def test_context_manager_should_compact():

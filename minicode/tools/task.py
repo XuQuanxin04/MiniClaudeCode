@@ -1,7 +1,7 @@
 """Task tool — spawn a sub-agent to handle complex multi-step tasks.
 
-Inspired by Claude Code's Task tool which launches an independent agent loop
-with its own context window, isolated from the main conversation.
+Launches an independent agent loop with its own context window, isolated from
+the main conversation.
 
 The sub-agent runs a full agent loop (model + tools) with:
 - Its own system prompt tailored to the task type

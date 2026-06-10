@@ -26,6 +26,7 @@ class Provider(str, Enum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     OPENROUTER = "openrouter"
+    DEEPSEEK = "deepseek"
     CUSTOM = "custom"
     MOCK = "mock"
 
@@ -296,10 +297,22 @@ _register(ModelInfo("deepseek/deepseek-r1", Provider.OPENROUTER,
 _register(ModelInfo("deepseek/deepseek-chat", Provider.OPENROUTER,
     context_window=128_000, max_output_tokens=8_192,
     pricing_input=0.14, pricing_output=0.28))
-_register(ModelInfo("deepseek-v4-pro[1m]", Provider.ANTHROPIC,
+_register(ModelInfo("deepseek-v4-flash", Provider.DEEPSEEK,
+    display_name="DeepSeek V4 Flash",
+    context_window=1_000_000, max_output_tokens=384_000,
+    pricing_input=0.14, pricing_output=0.28))
+_register(ModelInfo("deepseek-v4-pro", Provider.DEEPSEEK,
     display_name="DeepSeek V4 Pro",
-    context_window=128_000, max_output_tokens=8_192,
-    pricing_input=0.10, pricing_output=0.40))
+    context_window=1_000_000, max_output_tokens=384_000,
+    pricing_input=0.435, pricing_output=0.87))
+_register(ModelInfo("deepseek-chat", Provider.DEEPSEEK,
+    display_name="DeepSeek Chat",
+    context_window=1_000_000, max_output_tokens=384_000,
+    pricing_input=0.14, pricing_output=0.28))
+_register(ModelInfo("deepseek-reasoner", Provider.DEEPSEEK,
+    display_name="DeepSeek Reasoner",
+    context_window=1_000_000, max_output_tokens=384_000,
+    pricing_input=0.14, pricing_output=0.28))
 _register(ModelInfo("qwen/qwen3-235b-a22b", Provider.OPENROUTER,
     context_window=128_000, max_output_tokens=8_192,
     pricing_input=0.22, pricing_output=0.88))
@@ -339,12 +352,12 @@ def detect_provider(model: str, runtime: dict | None = None) -> Provider:
             return Provider.OPENROUTER
 
     # 2. DeepSeek direct API detection
-    if model_lower.startswith("deepseek") or "deepseek" in model_lower:
+    if model_lower in {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"}:
         if os.environ.get("DEEPSEEK_API_KEY"):
-            return Provider.CUSTOM
-        # If registered as CUSTOM in BUILTIN_MODELS, use that
-        if model in BUILTIN_MODELS and BUILTIN_MODELS[model].provider == Provider.CUSTOM:
-            return Provider.CUSTOM
+            return Provider.DEEPSEEK
+        if runtime and runtime.get("deepseekApiKey"):
+            return Provider.DEEPSEEK
+        return Provider.DEEPSEEK
 
     # 3. OpenAI detection
     openai_prefixes = ("gpt-4", "gpt-3.5", "o1-", "o3-", "chatgpt-")
@@ -405,7 +418,7 @@ class ProviderConfig:
     @property
     def is_openai_compatible(self) -> bool:
         """Whether this provider uses OpenAI Chat Completions API format."""
-        return self.provider in (Provider.OPENAI, Provider.OPENROUTER, Provider.CUSTOM)
+        return self.provider in (Provider.OPENAI, Provider.OPENROUTER, Provider.DEEPSEEK, Provider.CUSTOM)
 
 
 def build_provider_config(model: str, runtime: dict | None = None) -> ProviderConfig:
@@ -445,6 +458,23 @@ def build_provider_config(model: str, runtime: dict | None = None) -> ProviderCo
         api_key = os.environ.get("OPENAI_API_KEY", "") or runtime.get("openaiApiKey", "")
         return ProviderConfig(
             provider=Provider.OPENAI,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+        )
+
+    if provider == Provider.DEEPSEEK:
+        base_url = (
+            os.environ.get("DEEPSEEK_BASE_URL", "")
+            or runtime.get("deepseekBaseUrl", "")
+            or "https://api.deepseek.com"
+        ).rstrip("/")
+        api_key = (
+            os.environ.get("DEEPSEEK_API_KEY", "")
+            or runtime.get("deepseekApiKey", "")
+        )
+        return ProviderConfig(
+            provider=Provider.DEEPSEEK,
             model=model,
             base_url=base_url,
             api_key=api_key,
@@ -540,7 +570,7 @@ def create_model_adapter(
 
     provider_config = build_provider_config(model, runtime)
 
-    # OpenRouter / Custom / OpenAI all use OpenAI-compatible API
+    # OpenRouter / DeepSeek / Custom / OpenAI all use OpenAI-compatible API
     if provider_config.is_openai_compatible:
         from minicode.openai_adapter import OpenAIModelAdapter
         # Inject provider config into runtime so the adapter can use it
@@ -551,6 +581,9 @@ def create_model_adapter(
             enriched_runtime["openaiApiKey"] = provider_config.api_key
             enriched_runtime["_openrouter_headers"] = provider_config.extra_headers
             enriched_runtime["_openrouter_params"] = provider_config.extra_params
+        elif provider_config.provider == Provider.DEEPSEEK:
+            enriched_runtime["openaiBaseUrl"] = provider_config.base_url
+            enriched_runtime["openaiApiKey"] = provider_config.api_key
         elif provider_config.provider == Provider.CUSTOM:
             enriched_runtime["openaiBaseUrl"] = provider_config.base_url
             enriched_runtime["openaiApiKey"] = provider_config.api_key
@@ -633,6 +666,7 @@ def format_model_list(provider: Provider | None = None) -> str:
     lines.append("    /model <name>          — Switch to a specific model")
     lines.append("    /model anthropic       — List Anthropic models")
     lines.append("    /model openrouter      — List OpenRouter models")
+    lines.append("    /model deepseek        — List DeepSeek direct API models")
     lines.append("    /model status          — Show current model info")
     return "\n".join(lines)
 

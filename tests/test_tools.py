@@ -8,6 +8,7 @@ import pytest
 
 import minicode.tools.test_runner as test_runner_module
 import minicode.tools.run_command as run_command_module
+from minicode.auto_mode import PermissionMode
 from minicode.permissions import PermissionManager
 from minicode.tools.batch_ops import batch_copy_tool, batch_move_tool
 from minicode.tools.code_nav import find_references_tool, find_symbols_tool, get_ast_info_tool
@@ -149,6 +150,53 @@ def test_full_tool_registry_can_opt_into_utility_wrappers(tmp_path: Path) -> Non
 
     assert "base64_encode" in names
     assert "csv_parse" in names
+
+
+def test_tool_registry_blocks_side_effect_tools_in_plan_mode(tmp_path: Path) -> None:
+    target = tmp_path / "demo.txt"
+    target.write_text("keep me", encoding="utf-8")
+    tools = create_default_tool_registry(str(tmp_path), runtime=None)
+    permissions = PermissionManager(str(tmp_path), auto_mode=PermissionMode.PLAN)
+
+    result = tools.execute(
+        "batch_delete",
+        {"path": "demo.txt"},
+        ToolContext(cwd=str(tmp_path), permissions=permissions),
+    )
+
+    assert result.ok is False
+    assert "Plan mode blocks tool 'batch_delete'" in result.output
+    assert target.read_text(encoding="utf-8") == "keep me"
+
+
+def test_tool_registry_allows_read_tools_in_plan_mode(tmp_path: Path) -> None:
+    (tmp_path / "demo.txt").write_text("hello plan", encoding="utf-8")
+    tools = create_default_tool_registry(str(tmp_path), runtime=None)
+    permissions = PermissionManager(str(tmp_path), auto_mode=PermissionMode.PLAN)
+
+    result = tools.execute(
+        "read_file",
+        {"path": "demo.txt"},
+        ToolContext(cwd=str(tmp_path), permissions=permissions),
+    )
+
+    assert result.ok is True
+    assert "hello plan" in result.output
+
+
+def test_tool_registry_allows_code_analysis_tools_in_plan_mode(tmp_path: Path) -> None:
+    (tmp_path / "demo.py").write_text("def hello():\n    return 'plan'\n", encoding="utf-8")
+    tools = create_default_tool_registry(str(tmp_path), runtime=None)
+    permissions = PermissionManager(str(tmp_path), auto_mode=PermissionMode.PLAN)
+
+    result = tools.execute(
+        "find_symbols",
+        {"path": "demo.py", "symbol_type": "all"},
+        ToolContext(cwd=str(tmp_path), permissions=permissions),
+    )
+
+    assert result.ok is True
+    assert "hello" in result.output
 
 
 def test_zip_extract_rejects_entries_that_escape_destination(tmp_path: Path) -> None:

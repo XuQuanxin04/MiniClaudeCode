@@ -50,21 +50,20 @@ def _validate_mcp_command(command: str) -> None:
     """验证 MCP 命令的合法性"""
     from pathlib import Path
     
+    # Step 1: 先规范化命令路径，后面的白名单和路径检查都基于同一种表示。
     normalized = Path(command).resolve().as_posix()
     
-    # 不允许路径遍历字符
+    # Step 2: 禁止路径遍历，避免配置把 MCP 进程指向不可预期的位置。
     if '..' in normalized or '~' in normalized:
         raise RuntimeError("Invalid MCP command: contains path traversal characters")
     
-    # 提取命令的基本名称
+    # Step 3: 白名单按命令名判断，Windows 下还要去掉 .exe 后缀。
     base_command = Path(command).name.lower()
-    # 处理 .exe 后缀
     if base_command.endswith('.exe'):
         base_command = base_command[:-4]
     
-    # 如果是绝对路径，需要额外验证
+    # Step 4: 绝对路径允许系统目录里的常见运行时，但禁止随便指向任意可执行文件。
     if Path(command).is_absolute():
-        # 检查是否在常见的系统目录中
         home_posix = str(Path.home().as_posix())
         allowed_system_dirs = [
             '/usr/bin', '/usr/local/bin', '/usr/local/sbin', '/usr/sbin', '/opt',
@@ -88,14 +87,14 @@ def _validate_mcp_command(command: str) -> None:
         
         is_in_allowed_dir = any(normalized.lower().startswith(d.lower()) for d in allowed_system_dirs)
         
-        # 不在允许的系统目录且不在白名单中
+        # Step 5: 不在安全目录且不在白名单，就拒绝启动，降低恶意 MCP 配置风险。
         if not is_in_allowed_dir and base_command not in ALLOWED_COMMANDS:
             raise RuntimeError(
                 f"MCP command \"{command}\" is not in the allowed list. "
                 f"Use a whitelisted command or place the executable in a standard system directory."
             )
         
-        # 禁止危险的系统 shell
+        # Step 6: 即使路径合法，也不允许直接把系统 shell 当 MCP server 启动。
         dangerous_shells = ['cmd.exe', 'command.com', 'powershell.exe', 'pwsh.exe']
         if any(normalized.lower().endswith(d) for d in dangerous_shells):
             raise RuntimeError(
@@ -104,7 +103,7 @@ def _validate_mcp_command(command: str) -> None:
             )
         return
     
-    # 相对路径必须在白名单中
+    # Step 7: 相对命令必须来自白名单，防止当前目录下同名可执行文件被误启动。
     if base_command not in ALLOWED_COMMANDS:
         raise RuntimeError(
             f"MCP command \"{command}\" is not in the allowed list. "
@@ -117,6 +116,7 @@ def _validate_mcp_args(args: list[str]) -> None:
     """验证 MCP 参数不包含危险的 shell 元字符"""
     for arg in args:
         for char in arg:
+            # Step 1: MCP 启动不用 shell 拼接，所以参数里出现管道/重定向等元字符一律视为风险。
             if char in DANGEROUS_SHELL_CHARS:
                 raise RuntimeError(
                     f"Invalid MCP argument: contains dangerous shell character '{char}'. "
@@ -242,17 +242,20 @@ class StdioMcpClient:
         If previously failed, retries the connection.
         """
         if self._started:
+            # Step 1: start 是幂等的，已经启动过就不重复拉起子进程。
             return
         
         if self._start_error is not None and self.process is None:
-            # Previous attempt failed — reset for retry
+            # Step 2: 上次失败后首次使用时允许重试，避免启动阶段的一次错误永久禁用服务。
             self._start_error = None
         
         last_error: Exception | None = None
         for protocol in self._protocol_candidates():
             try:
+                # Step 3: 同一个 MCP server 可能支持 content-length 或 newline-json，两种协议逐个尝试。
                 self._spawn_process()
                 self.protocol = protocol
+                # Step 4: initialize 是握手请求，成功才说明这个子进程真的是可通信的 MCP server。
                 self.request(
                     "initialize",
                     {
@@ -267,6 +270,7 @@ class StdioMcpClient:
                 self._start_error = None
                 return
             except Exception as error:  # noqa: BLE001
+                # Step 5: 当前协议失败就关闭进程，换下一个协议重新试，避免半连接残留。
                 last_error = error
                 self.close()
         
@@ -276,8 +280,10 @@ class StdioMcpClient:
     def _ensure_started(self) -> None:
         """Ensure the server is started before making a request."""
         if self._started and not self._is_process_alive():
+            # Step 1: 子进程意外退出时清理状态，下次请求会重新 start。
             self.close()
         if not self._started:
+            # Step 2: 懒启动发生在真正需要工具/资源/Prompt 的时刻。
             self.start()
 
     def _is_process_alive(self) -> bool:
@@ -288,20 +294,22 @@ class StdioMcpClient:
         if not command:
             raise RuntimeError(f'MCP server "{self.server_name}" has no command configured.')
 
-        # 安全验证：检查命令和参数的合法性
+        # Step 1: 启动外部进程前先做命令和参数安全验证。
         _validate_mcp_command(command)
         _validate_mcp_args(list(self.config.get("args", []) or []))
 
         process_cwd = Path(self.cwd)
         if self.config.get("cwd"):
+            # Step 2: MCP server 可以有自己的工作目录，但必须相对当前项目解析。
             process_cwd = (process_cwd / str(self.config["cwd"])).resolve()
         env = os.environ.copy()
         for key, value in dict(self.config.get("env", {}) or {}).items():
+            # Step 3: 每个 server 单独注入环境变量，不污染整个 Python 进程环境。
             env[str(key)] = str(value)
 
         popen_kwargs: dict = {}
         if os.name == "nt":
-            # Prevent a console window from popping up for the child process
+            # Step 4: Windows 下隐藏子进程窗口，避免每个 MCP server 弹出控制台。
             CREATE_NO_WINDOW = 0x08000000
             popen_kwargs["creationflags"] = CREATE_NO_WINDOW
         try:
@@ -321,6 +329,7 @@ class StdioMcpClient:
         self.stderr_lines = []
         with self._lock:
             self._pending = {}
+        # Step 5: stderr 单独消费，超时/启动失败时能把最近日志带给用户。
         self._stderr_thread = threading.Thread(target=self._consume_stderr, daemon=True)
         self._stderr_thread.start()
 
@@ -366,6 +375,7 @@ class StdioMcpClient:
 
                 # Auto-detect protocol if not determined yet
                 if self.protocol is None:
+                    # Step 1: 如果握手前没确定协议，就根据第一行输出自动判断。
                     if line.lower().startswith("content-length:"):
                         self.protocol = "content-length"
                     else:
@@ -373,12 +383,12 @@ class StdioMcpClient:
 
                 if self.protocol == "newline-json":
                     try:
+                        # Step 2: newline-json 模式是一行一个 JSON-RPC 消息。
                         self._handle_message(json.loads(stripped))
                     except json.JSONDecodeError:
                         continue
                 else:
-                    # Content-length protocol
-                    # The current 'line' is the first header line
+                    # Step 3: content-length 模式先读 header，再按长度读取 JSON body。
                     header_lines = [line.rstrip("\r\n")]
                     while True:
                         next_line_bytes = self.process.stdout.readline()
@@ -417,7 +427,7 @@ class StdioMcpClient:
                         except (json.JSONDecodeError, UnicodeDecodeError):
                             pass
         finally:
-            # Bug 2: Notify pending requests when process exits
+            # Step 4: 子进程退出时唤醒所有等待中的 request，避免调用方一直阻塞。
             if self.process:
                 exit_code = self.process.poll()
                 error_msg = {"error": {"code": -1, "message": f"MCP server process exited (code={exit_code})"}}
@@ -429,8 +439,10 @@ class StdioMcpClient:
     def _handle_message(self, message: dict[str, Any]) -> None:
         message_id = message.get("id")
         if not isinstance(message_id, int):
+            # Step 1: notification 没有 id，不对应 pending request，这里直接忽略。
             return
         with self._lock:
+            # Step 2: 用 id 找回对应等待队列，把响应交还给 request()。
             queue = self._pending.pop(message_id, None)
             if queue is not None:
                 queue.put(message)
@@ -442,11 +454,13 @@ class StdioMcpClient:
         payload_bytes = json.dumps(message, ensure_ascii=False).encode("utf-8")
         
         if self.protocol == "newline-json":
+            # Step 1: newline-json 协议直接写一行 JSON。
             self.process.stdin.write(payload_bytes + b"\n")
             self.process.stdin.flush()
             self._ensure_stdout_thread()
             return
         
+        # Step 2: content-length 协议必须先写长度头，再写 JSON body。
         header = f"Content-Length: {len(payload_bytes)}\r\n\r\n".encode("utf-8")
         self.process.stdin.write(header + payload_bytes)
         self.process.stdin.flush()
@@ -456,15 +470,18 @@ class StdioMcpClient:
         self.send({"jsonrpc": "2.0", "method": method, "params": params})
 
     def request(self, method: str, params: Any, timeout_seconds: float = 5.0) -> Any:
+        # Step 1: 每个 request 分配递增 id，响应回来时靠 id 找到等待者。
         message_id = self.next_id
         self.next_id += 1
         response_queue: Queue[Any] = Queue(maxsize=1)
         with self._lock:
             self._pending[message_id] = response_queue
+        # Step 2: 发送后阻塞等待对应响应；stdout 线程收到响应后会 put 到这个队列。
         self.send({"jsonrpc": "2.0", "id": message_id, "method": method, "params": params})
         try:
             message = response_queue.get(timeout=timeout_seconds)
         except Empty as error:
+            # Step 3: 超时要清掉 pending，并把最近 stderr 附上，方便诊断 MCP server 为什么没回。
             with self._lock:
                 self._pending.pop(message_id, None)
             stderr = "\n".join(self.stderr_lines)
@@ -472,6 +489,7 @@ class StdioMcpClient:
                 f"MCP {self.server_name}: request timed out for {method}" + (f"\n{stderr}" if stderr else "")
             ) from error
         if message.get("error"):
+            # Step 4: JSON-RPC error 转成 RuntimeError，由上层包装成工具失败结果。
             details = message["error"].get("data")
             suffix = f"\n{json.dumps(details, indent=2, ensure_ascii=False)}" if details else ""
             raise RuntimeError(f"MCP {self.server_name}: {message['error']['message']}{suffix}")
@@ -480,6 +498,7 @@ class StdioMcpClient:
     def list_tools(self) -> list[dict[str, Any]]:
         """List tools with caching. Starts server lazily if not started."""
         if self._tools_cache is not None:
+            # Step 1: 工具描述通常不变，缓存能避免每次构建工具列表都请求 MCP server。
             return self._tools_cache
         self._ensure_started()
         result = self.request("tools/list", {})
@@ -515,6 +534,7 @@ class StdioMcpClient:
         )
 
     def call_tool(self, name: str, input_data: Any) -> ToolResult:
+        # Step 1: MCP 工具真正调用前确保 server 存活；懒启动失败会自然变成工具错误。
         self._ensure_started()
         return _format_tool_call_result(self.request("tools/call", {"name": name, "arguments": input_data or {}}))
 
@@ -598,13 +618,15 @@ def create_mcp_backed_tools(*, cwd: str, mcp_servers: dict[str, dict[str, Any]])
 
     for server_name, config in mcp_servers.items():
         if config.get("enabled") is False:
+            # Step 1: disabled server 仍写入摘要，让用户知道它被配置了但没有启用。
             servers.append(asdict(McpServerSummary(name=server_name, command=config.get("command", ""), status="disabled", toolCount=0, protocol=config.get("protocol"))))
             continue
 
+        # Step 2: 为每个 server 建一个懒启动 client；此时不一定真的已经启动进程。
         client = StdioMcpClient(server_name, config, cwd)
         clients.append(client)
         
-        # Register server with "pending" status — will be connected lazily
+        # Step 3: 先登记 pending 状态，Prompt 可以展示“有这个 MCP server”。
         servers.append(
             asdict(
                 McpServerSummary(
@@ -617,16 +639,7 @@ def create_mcp_backed_tools(*, cwd: str, mcp_servers: dict[str, dict[str, Any]])
             )
         )
         
-        # Eagerly discover tools/resources/prompts on first use via
-        # the lazy client. Register placeholder tools now that will
-        # resolve to the actual MCP tool on first call.
-        # 
-        # We register a single "gateway" tool per server that triggers
-        # lazy init, plus we'll discover and register actual tools
-        # after the first successful connection.
-        # 
-        # For simplicity, we still try to discover tools at creation
-        # time but don't fail if the server can't start yet.
+        # Step 4: 尝试发现工具/资源/Prompt；失败不阻塞整个 Agent，只把 server 状态标成 error。
         try:
             descriptors = client.list_tools()
             try:
@@ -644,14 +657,17 @@ def create_mcp_backed_tools(*, cwd: str, mcp_servers: dict[str, dict[str, Any]])
                 prompt_index[f"{server_name}:{prompt.get('name')}"] = {"serverName": server_name, "prompt": prompt}
 
             for descriptor in descriptors:
+                # Step 5: MCP 工具名包成 mcp__server__tool，避免不同 server 的同名工具冲突。
                 wrapped_name = f"mcp__{_sanitize_tool_segment(server_name)}__{_sanitize_tool_segment(str(descriptor.get('name', 'tool')))}"
                 descriptor_name = str(descriptor.get("name", "tool"))
                 input_schema = _normalize_input_schema(descriptor.get("inputSchema"))
 
                 def _validator(value: Any) -> Any:
+                    # Step 6: MCP server 自带 schema，这里先透传参数，具体校验交给 server。
                     return value
 
                 def _run(input_data: Any, _context, *, _client=client, _descriptor_name=descriptor_name):
+                    # Step 7: ToolRegistry 调用这个包装函数时，实际会转成 MCP tools/call 请求。
                     return _client.call_tool(_descriptor_name, input_data)
 
                 tools.append(
@@ -664,7 +680,7 @@ def create_mcp_backed_tools(*, cwd: str, mcp_servers: dict[str, dict[str, Any]])
                     )
                 )
 
-            # Update server status to connected
+            # Step 8: 发现成功后更新 server 摘要，system prompt 会显示工具/资源/Prompt 数量。
             for i, s in enumerate(servers):
                 if s["name"] == server_name:
                     servers[i] = asdict(
@@ -680,8 +696,7 @@ def create_mcp_backed_tools(*, cwd: str, mcp_servers: dict[str, dict[str, Any]])
                     )
                     break
         except Exception as error:  # noqa: BLE001
-            # Lazy init: don't fail — server will be retried on first tool call
-            # Just update status to reflect the error
+            # Step 9: MCP 失败只影响该 server，不影响本地文件工具和其他 MCP server。
             for i, s in enumerate(servers):
                 if s["name"] == server_name:
                     servers[i] = asdict(
@@ -718,6 +733,7 @@ def create_mcp_backed_tools(*, cwd: str, mcp_servers: dict[str, dict[str, Any]])
         )
 
         def _read_resource(input_data: dict, _context) -> ToolResult:
+            # Step 10: resource 工具按 server 名找到对应 client，再转发 resources/read。
             client = next((item for item in clients if item.server_name == input_data["server"]), None)
             if client is None:
                 return ToolResult(ok=False, output=f"Unknown MCP server: {input_data['server']}")
@@ -764,6 +780,7 @@ def create_mcp_backed_tools(*, cwd: str, mcp_servers: dict[str, dict[str, Any]])
         )
 
         def _get_prompt(input_data: dict, _context) -> ToolResult:
+            # Step 11: prompt 工具同样是包装层，把 MiniCode 工具调用转成 MCP prompts/get。
             client = next((item for item in clients if item.server_name == input_data["server"]), None)
             if client is None:
                 return ToolResult(ok=False, output=f"Unknown MCP server: {input_data['server']}")
@@ -780,6 +797,7 @@ def create_mcp_backed_tools(*, cwd: str, mcp_servers: dict[str, dict[str, Any]])
         )
 
     return {
+        # Step 12: 返回值被 tools/__init__.py 合并进 ToolRegistry；dispose 用于程序退出时关闭子进程。
         "tools": tools,
         "servers": servers,
         "dispose": lambda: [client.close() for client in clients],

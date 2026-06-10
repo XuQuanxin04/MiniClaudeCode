@@ -22,10 +22,10 @@ from minicode.tty_app import run_tty_app
 from minicode.workspace import resolve_tool_path
 
 
-def _handle_local_command(user_input: str, tools) -> str | None:
+def _handle_local_command(user_input: str, tools, permissions=None) -> str | None:
     if user_input == "/tools":
         return "\n".join(f"{tool.name}: {tool.description}" for tool in tools.list())
-    local_result = try_handle_local_command(user_input, tools=tools, cwd=str(Path.cwd()))
+    local_result = try_handle_local_command(user_input, tools=tools, cwd=str(Path.cwd()), permissions=permissions)
     return local_result
 
 
@@ -107,8 +107,10 @@ def _save_transcript_file(cwd: str, permissions, transcript: list[TranscriptEntr
     return str(target)
 
 def main() -> None:
+    # Step 1: 入口先修正终端编码，避免中文输入/输出在 Windows 终端里变成乱码。
     _configure_stdio_for_unicode()
 
+    # Step 2: CLI 参数只负责“怎么启动本次会话”，真正的 Agent 能力稍后再组装。
     parser = argparse.ArgumentParser(
         description="MiniCode Python - A lightweight terminal coding assistant",
         add_help=True,
@@ -154,17 +156,17 @@ def main() -> None:
     if remaining_argv and not any(not arg.startswith("--") for arg in remaining_argv):
         parser.error(f"unrecognized arguments: {' '.join(remaining_argv)}")
 
-    # Initialize logging
+    # Step 3: 先初始化日志；后续配置、模型、工具、上下文出错时都能留下诊断信息。
     from minicode.logging_config import setup_logging
     setup_logging(level=args.log_level)
 
-    # Run config validation if requested
+    # Step 4: 配置校验属于管理命令，完成后直接退出，不进入 Agent 对话循环。
     if args.validate_config:
         from minicode.config import format_config_diagnostic
         print(format_config_diagnostic())
         return
     
-    # Run installer if requested
+    # Step 5: 安装流程也是独立流程；它只负责写配置，不需要加载模型或工具。
     if args.install:
         from minicode.install import main as install_main
         install_main()
@@ -173,15 +175,17 @@ def main() -> None:
     cwd = str(Path.cwd())
     argv = remaining_argv
     
-    # Filter out our custom args before passing to management commands
+    # Step 6: /session、/resume 这类管理命令先处理；命中后不用再启动交互界面。
     management_argv = [a for a in argv if not a.startswith("--")]
     if maybe_handle_management_command(cwd, management_argv):
         return
 
     runtime = None
     try:
+        # Step 7: runtime 是模型名、API key、MCP 配置等运行时信息的统一入口。
         runtime = load_runtime_config(cwd)
     except Exception as e:  # noqa: BLE001
+        # Step 8: 配置坏了也不让程序崩掉，而是降级到 mock model，保证初学者还能跑通流程。
         runtime = None
         print(
             f"⚠️  Warning: Failed to load runtime config: {e}\n",
@@ -200,10 +204,11 @@ def main() -> None:
         )
 
     prompt_handler = _make_cli_permission_prompt() if sys.stdin.isatty() else None
+    # Step 9: 工具注册表把本地文件工具、命令工具、MCP 工具统一成同一种 ToolDefinition。
     tools = create_default_tool_registry(cwd, runtime=runtime)
     permissions = PermissionManager(cwd, prompt=prompt_handler)
     
-    # Use unified model registry for adapter creation
+    # Step 10: 模型适配器把不同供应商接口包成统一的 model.next(messages)。
     force_mock = runtime is None
     model = create_model_adapter(
         model=runtime.get("model", "") if runtime else "",
@@ -212,7 +217,7 @@ def main() -> None:
         force_mock=force_mock,
     )
     
-    # Initialize ContextManager for context window management
+    # Step 11: ContextManager 负责观察上下文窗口，接近上限时触发压缩。
     from minicode.context_manager import ContextManager
     from minicode.logging_config import get_logger
     logger = get_logger("main")
@@ -221,12 +226,12 @@ def main() -> None:
         context_mgr = ContextManager(model=runtime.get("model", "default"))
         logger.info("Context manager initialized for model: %s", runtime.get("model", "unknown"))
     
-    # Initialize MemoryManager for cross-session knowledge retention
+    # Step 12: MemoryManager 负责跨轮次/跨会话记忆，后面会把相关记忆注入 system prompt。
     from minicode.memory import MemoryManager
     memory_mgr = MemoryManager(project_root=Path(cwd))
     logger.info("Memory manager initialized")
     
-    # Initialize UserProfileManager for user preferences
+    # Step 13: 用户偏好单独加载，避免把“用户习惯”硬编码进主循环。
     from minicode.user_profile import UserProfileManager
     profile_manager = UserProfileManager(cwd=cwd)
     profile_manager.load_merged()
@@ -234,7 +239,7 @@ def main() -> None:
                 profile_manager.global_path.exists(),
                 profile_manager.project_path.exists())
     
-    # Initialize Store for global state management (inspired by Claude Code's Zustand store)
+    # Step 14: Store 保存 UI/运行时状态，例如当前 workspace、model、busy/idle。
     from minicode.state import create_app_store
     app_store = create_app_store(
         initial={
@@ -248,13 +253,15 @@ def main() -> None:
     messages = [
         {
             "role": "system",
+            # Step 15: 第一条消息必须是系统提示；它把工具、权限、MCP、记忆组织成模型的“工作说明书”。
             "content": build_system_prompt(
                 cwd,
                 permissions.get_summary(),
                 {
                     "skills": tools.get_skills(),
                     "mcpServers": tools.get_mcp_servers(),
-                    "memory_context": memory_mgr.get_relevant_context(),  # Inject memory
+                    # Step 16: 首轮还没有用户问题，所以先注入项目级通用记忆。
+                    "memory_context": memory_mgr.get_relevant_context(),
                 },
             ),
         }
@@ -291,6 +298,7 @@ def main() -> None:
                 if user_input == "/exit":
                     break
                 if user_input.startswith("/transcript-save "):
+                    # Step 17: transcript 保存是本地命令，不进入模型，避免无意义消耗 token。
                     output_path = user_input[len("/transcript-save ") :].strip()
                     if not output_path:
                         print("Usage: /transcript-save <path>")
@@ -300,19 +308,33 @@ def main() -> None:
                     continue
                 memory_result = memory_mgr.handle_user_memory_input(user_input)
                 if memory_result is not None:
+                    # Step 18: 记忆写入命令由本地处理，成功后只回显结果，不让模型再解释一遍。
                     _append_transcript(transcript, kind="user", body=user_input)
                     _append_transcript(transcript, kind="assistant", body=memory_result)
                     print(memory_result)
                     continue
-                local_result = _handle_local_command(user_input, tools)
+                local_result = _handle_local_command(user_input, tools, permissions=permissions)
                 if local_result is not None:
+                    # Step 19: /tools、/help 等本地命令直接返回，减少一次模型调用。
                     _append_transcript(transcript, kind="user", body=user_input)
                     _append_transcript(transcript, kind="assistant", body=local_result)
                     print(local_result)
                     continue
                 shortcut = parse_local_tool_shortcut(user_input)
                 if shortcut is not None:
+                    # Step 20: /cmd、/grep 这类快捷工具直接执行；适合用户明确指定工具的场景。
                     _append_transcript(transcript, kind="user", body=user_input)
+                    if (
+                        permissions.get_mode().value == "plan"
+                        and shortcut["toolName"] not in {"read_file", "list_files", "grep_files"}
+                    ):
+                        blocked = (
+                            "Plan mode blocks direct execution and file modification shortcuts. "
+                            "Use /execute after you approve the plan."
+                        )
+                        _append_transcript(transcript, kind="assistant", body=blocked)
+                        print(blocked)
+                        continue
                     result = tools.execute(
                         shortcut["toolName"],
                         shortcut["input"],
@@ -328,11 +350,13 @@ def main() -> None:
                     print(result.output)
                     continue
                 _append_transcript(transcript, kind="user", body=user_input)
+                # Step 21: 普通自然语言输入才进入对话历史，成为模型下一步决策的依据。
                 messages.append({"role": "user", "content": user_input})
                 history.append(user_input)
                 save_history_entries(history)
                 messages[0] = {
                     "role": "system",
+                    # Step 22: 每轮都重建系统提示，让“当前问题相关的记忆”优先进入上下文。
                     "content": build_system_prompt(
                         cwd,
                         permissions.get_summary(),
@@ -344,6 +368,7 @@ def main() -> None:
                     ),
                 }
                 permissions.begin_turn()
+                # Step 23: 真正的 Agent 回合在 run_agent_turn 中完成：模型思考、调用工具、处理结果、继续循环。
                 messages = run_agent_turn(
                     model=model,
                     tools=tools,
@@ -356,7 +381,7 @@ def main() -> None:
                 )
                 permissions.end_turn()
                 
-                # Log context usage after turn
+                # Step 24: 回合结束后记录上下文使用量，方便后续判断是否需要压缩。
                 if context_mgr:
                     stats = context_mgr.get_stats()
                     logger.debug("After turn: %d tokens (%.0f%%)", stats.total_tokens, stats.usage_percentage)

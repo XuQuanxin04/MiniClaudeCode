@@ -4,6 +4,7 @@ import pytest
 
 import minicode.permissions as permissions_module
 from minicode.permissions import PermissionManager, _classify_dangerous_command, _is_within_directory
+from minicode.auto_mode import PermissionMode
 
 
 @pytest.fixture(autouse=True)
@@ -182,3 +183,22 @@ def test_windows_style_directory_match_is_case_insensitive(monkeypatch: pytest.M
     monkeypatch.setattr(permissions_module, "_is_win", True)
 
     assert _is_within_directory("/Users/Alice/Repo", "/users/alice/repo/src/main.py")
+
+
+def test_plan_mode_blocks_edits(tmp_path: Path) -> None:
+    target = tmp_path / "demo.py"
+    target.write_text("old\n", encoding="utf-8")
+    manager = PermissionManager(str(tmp_path), auto_mode=PermissionMode.PLAN)
+
+    with pytest.raises(RuntimeError, match="Plan mode"):
+        manager.ensure_edit(str(target), "- old\n+ new\n")
+
+
+def test_permission_manager_switches_modes(tmp_path: Path) -> None:
+    manager = PermissionManager(str(tmp_path))
+
+    message = manager.set_mode("plan")
+
+    assert "Plan mode" in message
+    assert manager.get_mode() == PermissionMode.PLAN
+    assert "permission mode: plan" in manager.get_summary()

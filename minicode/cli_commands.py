@@ -40,6 +40,10 @@ SLASH_COMMANDS = [
     SlashCommand("/skills", "/skills", "List discovered SKILL.md workflows."),
     SlashCommand("/mcp", "/mcp", "Show configured MCP servers and connection state."),
     SlashCommand("/permissions", "/permissions", "Show mini-code permission storage path."),
+    SlashCommand("/plan", "/plan", "Switch to read-only planning mode."),
+    SlashCommand("/execute", "/execute", "Switch back to normal execution mode."),
+    SlashCommand("/mode", "/mode [default|auto|plan|bypass]", "Show or change the current permission mode."),
+    SlashCommand("/checkpoint", "/checkpoint [list|show <id>|rollback <id>]", "List, inspect, or roll back MiniCode file checkpoints."),
     SlashCommand("/exit", "/exit", "Exit mini-code."),
     SlashCommand("/debug", "/debug", "Show scroll and terminal diagnostics."),
     SlashCommand("/user", "/user", "Show or manage user profile (preferences, coding style)."),
@@ -83,6 +87,12 @@ def format_slash_commands() -> str:
             ("/cybernetics", "Show control-system status"),
             ("/tasks", "Show current task list"),
             ("/memory", "Show memory system status"),
+        ],
+        "🧭 Planning & Recovery": [
+            ("/plan", "Switch to read-only planning mode"),
+            ("/execute", "Return to reviewed execution mode"),
+            ("/mode", "Show or change permission mode"),
+            ("/checkpoint", "List, inspect, or roll back checkpoints"),
         ],
         "✏️ File Operations": [
             ("/ls [path]", "List files in directory"),
@@ -143,7 +153,7 @@ def complete_slash_command(line: str) -> tuple[list[str], str]:
     return (hits if hits else commands, line)
 
 
-def try_handle_local_command(user_input: str, tools=None, cwd: str | None = None) -> str | None:
+def try_handle_local_command(user_input: str, tools=None, cwd: str | None = None, permissions=None) -> str | None:
     if user_input in {"/", "/help"}:
         return format_slash_commands()
 
@@ -159,6 +169,75 @@ def try_handle_local_command(user_input: str, tools=None, cwd: str | None = None
 
     if user_input == "/permissions":
         return f"permission store: {MINI_CODE_PERMISSIONS_PATH}"
+
+    if user_input == "/plan":
+        from minicode.auto_mode import PermissionMode, set_permission_mode
+        if permissions is not None:
+            message = permissions.set_mode(PermissionMode.PLAN)
+        else:
+            message = set_permission_mode(PermissionMode.PLAN)
+        return "\n".join([
+            message,
+            "Use this mode to read files, search code, inspect structure, and produce an implementation plan.",
+            "File edits, write tools, and non-read-only commands are blocked until you run /execute.",
+        ])
+
+    if user_input == "/execute":
+        from minicode.auto_mode import PermissionMode, set_permission_mode
+        if permissions is not None:
+            message = permissions.set_mode(PermissionMode.DEFAULT)
+        else:
+            message = set_permission_mode(PermissionMode.DEFAULT)
+        return "\n".join([
+            message,
+            "The agent can now apply reviewed edits and run approved development commands.",
+        ])
+
+    if user_input == "/mode":
+        if permissions is not None:
+            return permissions.format_mode_status()
+        from minicode.auto_mode import get_mode_state
+        return get_mode_state().format_status()
+
+    if user_input.startswith("/mode "):
+        from minicode.auto_mode import set_permission_mode
+        mode_name = user_input[len("/mode "):].strip()
+        try:
+            if permissions is not None:
+                message = permissions.set_mode(mode_name)
+            else:
+                message = set_permission_mode(mode_name)
+        except ValueError as error:
+            return str(error)
+        return message
+
+    if user_input == "/checkpoint" or user_input == "/checkpoint list":
+        from pathlib import Path
+        from minicode.checkpoints import format_checkpoint_list
+        return format_checkpoint_list(Path(cwd) if cwd else Path.cwd())
+
+    if user_input.startswith("/checkpoint show "):
+        from pathlib import Path
+        from minicode.checkpoints import format_checkpoint_show
+        checkpoint_id = user_input[len("/checkpoint show "):].strip()
+        try:
+            return format_checkpoint_show(Path(cwd) if cwd else Path.cwd(), checkpoint_id)
+        except ValueError as error:
+            return str(error)
+
+    if user_input.startswith("/checkpoint rollback "):
+        from pathlib import Path
+        from minicode.checkpoints import CheckpointManager
+        checkpoint_id = user_input[len("/checkpoint rollback "):].strip()
+        manager = CheckpointManager(Path(cwd) if cwd else Path.cwd())
+        try:
+            record = manager.rollback(checkpoint_id)
+        except ValueError as error:
+            return str(error)
+        return (
+            f"Rolled back checkpoint {record.checkpoint_id}.\n"
+            f"Restored {len(record.files)} path(s)."
+        )
 
     if user_input == "/skills":
         skills = tools.get_skills() if tools else []
@@ -194,11 +273,21 @@ def try_handle_local_command(user_input: str, tools=None, cwd: str | None = None
         # Context usage display
         try:
             from minicode.context_manager import load_context_state
+            from minicode.context_compactor import ContextCompactor
             ctx_mgr = load_context_state()
+            compactor = ContextCompactor(
+                context_window=ctx_mgr.context_window if ctx_mgr else 200000,
+                workspace=cwd,
+            )
             if ctx_mgr:
-                return ctx_mgr.format_context_details()
-            else:
-                return "No context state available. Context tracking starts after first turn."
+                return "\n\n".join([
+                    ctx_mgr.format_context_details(),
+                    compactor.explain_layers(),
+                ])
+            return "\n\n".join([
+                "No context state available. Context tracking starts after first turn.",
+                compactor.explain_layers(),
+            ])
         except Exception as e:
             return f"Error loading context: {e}"
 

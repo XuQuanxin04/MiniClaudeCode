@@ -1,5 +1,6 @@
 from minicode.cli_commands import find_matching_slash_commands, format_slash_commands, try_handle_local_command
 from minicode.local_tool_shortcuts import parse_local_tool_shortcut
+from minicode.permissions import PermissionManager
 
 
 def test_find_matching_slash_commands_returns_help_variants() -> None:
@@ -53,6 +54,14 @@ def test_format_slash_commands_includes_history_and_retry() -> None:
     assert "/cybernetics" in commands
 
 
+def test_format_slash_commands_includes_planning_and_recovery() -> None:
+    commands = format_slash_commands()
+    assert "/plan" in commands
+    assert "/execute" in commands
+    assert "/mode" in commands
+    assert "/checkpoint" in commands
+
+
 def test_memory_command_uses_current_workspace(tmp_path) -> None:
     result = try_handle_local_command("/memory", cwd=str(tmp_path))
 
@@ -88,3 +97,43 @@ def test_cybernetics_command_uses_persisted_report(tmp_path, monkeypatch) -> Non
     assert result is not None
     assert "source: latest agent-loop report" in result
     assert "context: compact" in result
+
+
+def test_plan_and_execute_commands_switch_permission_mode(tmp_path) -> None:
+    permissions = PermissionManager(str(tmp_path))
+
+    plan_result = try_handle_local_command("/plan", cwd=str(tmp_path), permissions=permissions)
+    assert plan_result is not None
+    assert permissions.get_mode().value == "plan"
+
+    execute_result = try_handle_local_command("/execute", cwd=str(tmp_path), permissions=permissions)
+    assert execute_result is not None
+    assert permissions.get_mode().value == "default"
+
+
+def test_mode_command_reports_current_mode(tmp_path) -> None:
+    permissions = PermissionManager(str(tmp_path))
+    try_handle_local_command("/mode plan", cwd=str(tmp_path), permissions=permissions)
+
+    result = try_handle_local_command("/mode", cwd=str(tmp_path), permissions=permissions)
+
+    assert result is not None
+    assert "Current mode: plan" in result
+
+
+def test_context_command_includes_explainable_layers(tmp_path) -> None:
+    result = try_handle_local_command("/context", cwd=str(tmp_path))
+
+    assert result is not None
+    assert "Explainable Three-Layer Context Strategy" in result
+    assert "L1 Recent Working Context" in result
+    assert "L2 Session Summary" in result
+    assert "L3 Long-Term Memory And Artifacts" in result
+
+
+def test_model_deepseek_lists_direct_models() -> None:
+    result = try_handle_local_command("/model deepseek")
+
+    assert result is not None
+    assert "[DEEPSEEK]" in result
+    assert "deepseek-v4-flash" in result

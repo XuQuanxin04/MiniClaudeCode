@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Protocol
 
+from minicode.auto_mode import PermissionMode, SAFE_TOOLS, get_mode_state
+
 
 # ---------------------------------------------------------------------------
 # Constants for smart truncation
@@ -46,9 +48,11 @@ def _smart_truncate_output(output: str, tool_name: str, max_chars: int | None = 
     if not output:
         return output
     
+    # Step 1: 每类工具有不同输出预算；例如 read_file 可以多给一些，grep/web 搜索要更克制。
     limit = max_chars or _TOOL_OUTPUT_LIMITS.get(tool_name, _DEFAULT_MAX_OUTPUT)
     
     if len(output) <= limit:
+        # Step 2: 小输出原样返回，避免过度加工影响模型读取完整信息。
         return output
     
     lines = output.split("\n")
@@ -60,7 +64,7 @@ def _smart_truncate_output(output: str, tool_name: str, max_chars: int | None = 
     max_lines = int(limit / max(40, avg_line_len))
     
     if tool_name == "read_file":
-        # Keep head + tail — most important for understanding file structure
+        # Step 3: 文件读取保留头尾；头部看结构，尾部看收束，必要时模型可重新读取中间段。
         head_lines = max(1, int(max_lines * 0.6))
         tail_lines = max(1, max_lines - head_lines)
         head = "\n".join(lines[:head_lines])
@@ -73,11 +77,11 @@ def _smart_truncate_output(output: str, tool_name: str, max_chars: int | None = 
         )
     
     if tool_name in ("run_command", "run_with_debug"):
-        # Keep head + error lines + tail
+        # Step 4: 命令输出除头尾外额外保留 error/warning 行，因为失败线索常藏在中间。
         head_lines = max(1, int(max_lines * 0.4))
         tail_lines = max(1, int(max_lines * 0.4))
         
-        # Also extract error/warning lines
+        # Step 5: 从被省略区抽取关键错误行，让模型不用读完整日志也能定位问题。
         error_pattern = re.compile(r'(?i)(error|fail|exception|traceback|warning)', re.IGNORECASE)
         error_lines = [
             (i, line) for i, line in enumerate(lines)
@@ -99,7 +103,7 @@ def _smart_truncate_output(output: str, tool_name: str, max_chars: int | None = 
         )
     
     if tool_name in ("grep_files", "web_search"):
-        # Keep first N matches + summary
+        # Step 6: 搜索结果通常前几条最相关，后面用省略摘要说明还有多少内容。
         head = "\n".join(lines[:max_lines])
         omitted = total_lines - max_lines
         return (
@@ -121,7 +125,7 @@ def _smart_truncate_output(output: str, tool_name: str, max_chars: int | None = 
 
 
 # ---------------------------------------------------------------------------
-# Tool metadata (inspired by Claude Code's Tool type)
+# Tool metadata for coding-agent tool classification
 # ---------------------------------------------------------------------------
 
 class ToolCapability(str, Enum):
@@ -135,8 +139,6 @@ class ToolCapability(str, Enum):
 @dataclass
 class ToolMetadata:
     """Tool metadata for classification and discovery.
-    
-    Inspired by Claude Code's Tool type definition.
     """
     name: str
     description: str
@@ -163,13 +165,13 @@ class ToolMetadata:
 
 
 # ---------------------------------------------------------------------------
-# Tool Protocol (inspired by Claude Code's Tool interface)
+# Tool protocol for a complete tool lifecycle
 # ---------------------------------------------------------------------------
 
 class Tool(Protocol):
     """Tool protocol defining a complete tool lifecycle.
     
-    Inspired by Claude Code's Tool type which includes:
+    A complete coding-agent tool includes:
     - call: Execution logic
     - description: Dynamic description generation
     - validate_input: Input validation
@@ -273,7 +275,7 @@ class ToolRegistry:
         self._skills = skills or []
         self._mcp_servers = mcp_servers or []
         self._disposer = disposer
-        # 工具查找缓存 - O(1) 查找代替 O(n) 遍历
+        # Step 1: 启动时建立 name -> ToolDefinition 索引，模型每次调用工具都能 O(1) 找到定义。
         self._tool_index: dict[str, ToolDefinition] = {t.name: t for t in tools}
 
     def list(self) -> list[ToolDefinition]:
@@ -289,8 +291,29 @@ class ToolRegistry:
         return list(self._mcp_servers)
 
     def find(self, name: str) -> ToolDefinition | None:
-        # O(1) lookup via cached index
+        # Step 2: 所有工具调用都从这里查找，找不到就说明模型请求了不存在的工具名。
         return self._tool_index.get(name)
+
+    def _blocked_by_plan_mode(self, tool_name: str, context: ToolContext) -> ToolResult | None:
+        """Block side-effect tools while the session is in plan mode."""
+        permissions = getattr(context, "permissions", None)
+        get_mode = getattr(permissions, "get_mode", None)
+        if get_mode is None:
+            return None
+        try:
+            mode = get_mode()
+        except Exception:
+            return None
+        if mode != PermissionMode.PLAN or tool_name in SAFE_TOOLS:
+            return None
+        get_mode_state().record_decision("block")
+        return ToolResult(
+            ok=False,
+            output=(
+                f"Plan mode blocks tool '{tool_name}'. "
+                "Use /execute after approving the plan to allow edits, commands, or external side-effect tools."
+            ),
+        )
 
     def execute(self, tool_name: str, input_data: Any, context: ToolContext) -> ToolResult:
         """Execute a tool with comprehensive error protection.
@@ -306,43 +329,49 @@ class ToolRegistry:
         4. Output too large → smart truncation
         5. Unexpected errors → error result (never propagates to caller)
         """
+        # Step 3: 先查工具定义；不存在时返回 ToolResult，而不是抛异常打断 Agent 主循环。
         tool = self.find(tool_name)
         if tool is None:
             return ToolResult(ok=False, output=f"Unknown tool: {tool_name}")
 
         try:
-            # Phase 1: Input validation (with error context)
+            # Step 4: 第一层是输入校验，把模型给的 JSON 参数转换成工具真正需要的结构。
             try:
                 parsed = tool.validator(input_data)
             except (ValueError, TypeError, KeyError) as ve:
+                # Step 5: 校验失败时带上原始输入片段，模型下一轮才能修正参数格式。
                 return ToolResult(
                     ok=False,
                     output=f"Input validation error in {tool_name}: {ve}\n"
                            f"Input was: {str(input_data)[:200]}"
                 )
             
-            # Phase 2: Execution (with crash protection)
+            # Step 6: 计划模式在统一入口兜底；批量工具和 MCP 工具也不能绕过只读边界。
+            plan_block = self._blocked_by_plan_mode(tool_name, context)
+            if plan_block is not None:
+                return plan_block
+
+            # Step 7: 第三层才真正执行工具；工具内部负责路径解析、权限检查和业务逻辑。
             result = tool.run(parsed, context)
             
-            # Phase 3: Output sanitization
+            # Step 8: 清理输出，保证返回给模型的一定是字符串。
             if result.output is None:
                 result.output = ""
             
-            # Smart truncation for large outputs
+            # Step 9: 大输出进入智能截断，避免一次 read/log/search 把上下文窗口撑爆。
             if result.output and len(result.output) > _LARGE_OUTPUT_THRESHOLD:
                 result.output = _smart_truncate_output(result.output, tool_name)
             
             return result
             
         except (KeyboardInterrupt, SystemExit):
-            # These should always propagate upward
+            # Step 10: 用户中断/进程退出不能吞掉，否则 CLI 无法正常停止。
             raise
         except Exception as error:  # noqa: BLE001
-            # Global safety net: convert any unhandled exception to error result
-            # This prevents a single buggy tool from crashing the entire session
+            # Step 11: 工具自身 bug 也转成 ToolResult，主循环会把错误回填给模型继续恢复。
             import traceback
             tb_lines = traceback.format_exception(type(error), error, error.__traceback__)
-            # Include last 5 lines of traceback for debugging
+            # Step 12: 只保留 traceback 尾部，既能调试，又不会把上下文塞满。
             tb_excerpt = "".join(tb_lines[-5:]).strip()
             error_type = type(error).__name__
             

@@ -1,4 +1,4 @@
-"""Edit file tool with precise string matching, inspired by Claude Code's Edit tool.
+"""Edit file tool with precise string matching for coding-agent edits.
 
 Key features:
 - Exact string match with line/whitespace-aware comparison

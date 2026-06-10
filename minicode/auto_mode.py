@@ -1,7 +1,7 @@
-"""Auto Mode for MiniCode Python.
+"""Permission modes and risk assessment for MiniCode Python.
 
-Inspired by Claude Code's auto mode which sits between standard approval
-and --dangerously-skip-permissions. It includes:
+Inspired by public coding-agent mode designs, this module sits between
+standard approval and explicit permission bypass. It includes:
 - Input-layer prompt injection detection
 - Output-layer transcription classifier
 - Safe operations auto-approve
@@ -26,11 +26,37 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 class PermissionMode(str, Enum):
-    """Permission modes (inspired by Claude Code)."""
+    """Permission modes for local tool execution."""
     DEFAULT = "default"           # Ask for everything
     AUTO = "auto"                 # Auto-approve safe ops
     BYPASS = "bypass"             # Skip all permissions (dangerous!)
     PLAN = "plan"                 # Read-only, no execution
+
+
+def parse_permission_mode(value: str | PermissionMode) -> PermissionMode:
+    """Parse a user-facing mode name into a PermissionMode."""
+    if isinstance(value, PermissionMode):
+        return value
+    normalized = str(value).strip().lower()
+    aliases = {
+        "act": PermissionMode.DEFAULT,
+        "execute": PermissionMode.DEFAULT,
+        "execution": PermissionMode.DEFAULT,
+        "safe": PermissionMode.AUTO,
+        "auto-approve": PermissionMode.AUTO,
+        "danger": PermissionMode.BYPASS,
+        "skip": PermissionMode.BYPASS,
+        "readonly": PermissionMode.PLAN,
+        "read-only": PermissionMode.PLAN,
+        "planning": PermissionMode.PLAN,
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    try:
+        return PermissionMode(normalized)
+    except ValueError as exc:
+        valid = ", ".join(mode.value for mode in PermissionMode)
+        raise ValueError(f"Unknown permission mode '{value}'. Valid modes: {valid}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -52,10 +78,17 @@ class RiskLevel(str, Enum):
 
 # Safe tools (auto-approve in auto mode)
 SAFE_TOOLS = frozenset({
-    "read_file",
-    "list_files",
+    "ask_user",
+    "code_review",
+    "diff_viewer",
+    "file_tree",
+    "find_references",
+    "find_symbols",
+    "get_ast_info",
     "grep_files",
+    "list_files",
     "load_skill",
+    "read_file",
 })
 
 # Low-risk tools (auto-approve with logging)
@@ -133,8 +166,6 @@ class RiskAssessment:
 
 class AutoModeChecker:
     """Checks if operations can be auto-approved.
-    
-    Inspired by Claude Code's auto mode with input/output layer checks.
     """
     
     def __init__(self, mode: PermissionMode = PermissionMode.DEFAULT):
@@ -298,7 +329,7 @@ class AutoModeChecker:
         )
     
     # -----------------------------------------------------------------------
-    # Input/Output layer checks (inspired by Claude Code)
+    # Input/Output layer checks
     # -----------------------------------------------------------------------
     
     @staticmethod
@@ -381,7 +412,7 @@ class ModeState:
             PermissionMode.DEFAULT: "Ask for every action",
             PermissionMode.AUTO: "Auto-approve safe operations",
             PermissionMode.BYPASS: "⚠️ Skip all permissions (dangerous!)",
-            PermissionMode.PLAN: "Read-only mode",
+            PermissionMode.PLAN: "Read-only planning mode",
         }
         
         lines = [
@@ -422,18 +453,19 @@ def get_mode_state() -> ModeState:
     return _mode_state
 
 
-def set_permission_mode(mode: PermissionMode) -> str:
+def set_permission_mode(mode: PermissionMode | str) -> str:
     """Set global permission mode."""
     import time
+    mode = parse_permission_mode(mode)
     _checker.set_mode(mode)
     _mode_state.mode = mode
     _mode_state.mode_changed_at = time.time()
-    
+
     mode_messages = {
-        PermissionMode.DEFAULT: "✓ Default mode: All actions require approval",
-        PermissionMode.AUTO: "⚡ Auto mode: Safe operations auto-approved",
-        PermissionMode.BYPASS: "⚠️ BYPASS MODE: All permissions skipped!",
-        PermissionMode.PLAN: "📖 Plan mode: Read-only operations allowed",
+        PermissionMode.DEFAULT: "Default mode: execution is enabled and normal approvals apply.",
+        PermissionMode.AUTO: "Auto mode: safe operations can be approved automatically.",
+        PermissionMode.BYPASS: "Bypass mode: permissions are skipped. Use with extreme care.",
+        PermissionMode.PLAN: "Plan mode: read/search/analyze only; file edits and execution are blocked.",
     }
-    
+
     return mode_messages.get(mode, f"Mode changed to {mode.value}")

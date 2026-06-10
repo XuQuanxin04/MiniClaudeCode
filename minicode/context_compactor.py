@@ -1,4 +1,4 @@
-"""Claude Code-style Context Management System for MiniCode.
+"""Explainable context management system for MiniCode.
 
 Implements the three-tier context management architecture:
 
@@ -17,7 +17,9 @@ Implements the three-tier context management architecture:
    - Media-size error recovery
    - Fallback to user-visible error
 
-Architecture reference: compact(5).md (Claude Code source analysis)
+Architecture references: public coding-agent projects and MiniCode's local
+runtime constraints. This module does not depend on leaked implementation
+details from any proprietary project.
 """
 from __future__ import annotations
 
@@ -952,7 +954,7 @@ class ReactiveCompactEngine:
 class ContextCompactor:
     """Unified context management orchestrator.
 
-    Implements the complete Claude Code-style pipeline:
+    Implements the complete MiniCode context pipeline:
 
     Step 1: Construct active context (from last boundary)
     Step 2: Apply tool result budget
@@ -1093,6 +1095,26 @@ class ContextCompactor:
             "auto_compact_threshold": self._auto_compact.threshold_tokens,
         }
 
+    def explain_layers(self) -> str:
+        """Explain the three-layer context strategy in user-facing language."""
+        stats = self.get_stats()
+        last = self._last_compact_result
+        last_summary = (
+            f"{last.strategy.value}, freed ~{last.tokens_freed} tokens"
+            if last is not None
+            else "no full compact has run yet"
+        )
+        return "\n".join([
+            "Explainable Three-Layer Context Strategy",
+            "-" * 40,
+            "L1 Recent Working Context: the latest user request, assistant reasoning markers, and recent tool results stay in the live message list.",
+            f"  Current protection: large tool outputs are persisted ({stats['tool_results_persisted']} result(s)); duplicate reads are tracked ({stats['read_dedup_entries']} file(s)).",
+            "L2 Session Summary: when usage crosses the high-water mark, older conversation is compacted into a summary boundary.",
+            f"  Trigger point: {stats['auto_compact_threshold']:,} / {stats['context_window']:,} tokens; last compact: {last_summary}.",
+            "L3 Long-Term Memory And Artifacts: durable project memory and oversized tool results live on disk, then are re-injected only when useful.",
+            f"  Disk-backed savings: {stats['tool_bytes_saved']} bytes saved; microcompact cleared ~{stats['microcompact_tokens_cleared']} tokens.",
+        ])
+
     def format_pipeline_status(self) -> str:
         stats = self.get_stats()
         lines = [
@@ -1108,5 +1130,7 @@ class ContextCompactor:
             "",
             f"Context window: {stats['context_window']:,} tokens",
             f"Auto compact threshold: {stats['auto_compact_threshold']:,} tokens ({self._config.threshold_ratio:.0%})",
+            "",
+            self.explain_layers(),
         ]
         return "\n".join(lines)

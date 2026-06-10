@@ -234,9 +234,11 @@ def _execute_tool_shortcut(
     tool_input: Any,
     rerender: Callable[[], None],
 ) -> None:
+    # Step 1: 快捷工具绕过模型，但仍然要把 UI 状态切到 busy，让用户知道正在执行。
     state.is_busy = True
     state.status = f"Running {tool_name}..."
     state.active_tool = tool_name
+    # Step 2: 先创建一条 running 工具记录；工具还没返回时，界面也能显示“正在做什么”。
     entry_id = _push_transcript_entry(
         state,
         kind="tool",
@@ -247,6 +249,7 @@ def _execute_tool_shortcut(
     rerender()
 
     try:
+        # Step 3: 所有快捷工具仍走 ToolRegistry，这样权限、路径解析和错误格式保持一致。
         result = args.tools.execute(
             tool_name,
             tool_input,
@@ -261,6 +264,7 @@ def _execute_tool_shortcut(
         _collapse_tool_entry(state, entry_id, _summarize_collapsed_tool_body(output))
         state.transcript_scroll_offset = 0
     finally:
+        # Step 4: 不管工具成功还是失败，都要恢复 UI 状态，否则界面会一直停在 busy。
         state.is_busy = False
         state.active_tool = None
         _finalize_dangling_running_tools(state)
@@ -281,7 +285,7 @@ def _handle_input(
 ) -> bool:
     """Returns True if /exit was typed."""
     if state.is_busy:
-        # Animated spinner during tool execution
+        # Step 1: Agent/工具运行时不再接收新请求，只刷新 spinner，避免同一会话并发写状态。
         import itertools, time
         spinners = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
         tick = int(time.monotonic() * 8) % len(spinners)
@@ -301,24 +305,25 @@ def _handle_input(
 
     memory_mgr = getattr(args, "memory_manager", None)
     if memory_mgr is not None:
+        # Step 2: 记忆命令优先本地处理；它改变长期记忆，不需要模型参与。
         memory_result = memory_mgr.handle_user_memory_input(input_text)
         if memory_result is not None:
             _push_transcript_entry(state, kind="user", body=input_text)
             _push_transcript_entry(state, kind="assistant", body=memory_result)
             return False
 
-    # History
+    # Step 3: 只有有效输入才写入历史，空输入和重复输入不污染上下键历史。
     if not state.history or state.history[-1] != input_text:
         state.history.append(input_text)
         save_history_entries(state.history)
     state.history_index = len(state.history)
     state.history_draft = ""
 
-    # Autosave trigger
+    # Step 4: 用户提交内容后标记 autosave dirty，后续会话恢复才能拿到最新现场。
     if state.autosave:
         state.autosave.mark_dirty()
 
-    # /tools
+    # Step 5: /tools 属于本地查询，直接从 ToolRegistry 生成列表，不消耗模型调用。
     if input_text == "/tools":
         _push_transcript_entry(
             state,
@@ -329,21 +334,39 @@ def _handle_input(
         )
         return False
 
-    # Local commands
-    local_result = try_handle_local_command(input_text, tools=args.tools, cwd=args.cwd)
+    # Step 6: /help、/context 等本地命令在输入层截获，保持“命令”和“自然语言任务”分流。
+    local_result = try_handle_local_command(
+        input_text,
+        tools=args.tools,
+        cwd=args.cwd,
+        permissions=args.permissions,
+    )
     if local_result is not None:
         _push_transcript_entry(state, kind="assistant", body=local_result)
         return False
 
-    # Tool shortcuts
+    # Step 7: 工具快捷语法表达的是“我已经选好工具了”，所以直接执行工具，不让模型再规划。
     shortcut = parse_local_tool_shortcut(input_text)
     if shortcut:
+        if (
+            args.permissions.get_mode().value == "plan"
+            and shortcut["toolName"] not in {"read_file", "list_files", "grep_files"}
+        ):
+            _push_transcript_entry(
+                state,
+                kind="assistant",
+                body=(
+                    "Plan mode blocks direct execution and file modification shortcuts. "
+                    "Use /execute after you approve the plan."
+                ),
+            )
+            return False
         _execute_tool_shortcut(
             args, state, shortcut["toolName"], shortcut["input"], rerender
         )
         return False
 
-    # Unknown slash commands
+    # Step 8: 未知 slash 命令不交给模型猜，直接给相似命令提示，减少误操作。
     if input_text.startswith("/"):
         matches = find_matching_slash_commands(input_text)
         _push_transcript_entry(
@@ -357,17 +380,17 @@ def _handle_input(
         )
         return False
 
-    # Agent turn
+    # Step 9: 走到这里才说明这是普通任务输入，需要进入 Agent 主循环。
     _push_transcript_entry(state, kind="user", body=input_text)
     state.transcript_scroll_offset = 0
     state.status = "Thinking..."
     state.is_busy = True
     
-    # Hook: user input
+    # Step 10: hook 把“用户已输入”这个事件广播出去，外部插件/日志可以观察流程。
     from minicode.hooks import HookEvent, fire_hook_sync
     fire_hook_sync(HookEvent.USER_INPUT, user_input=input_text)
     
-    # Prompt injection detection (input layer)
+    # Step 11: 输入层只做安全提醒，不直接拦截；模型后续会在系统消息里看到风险提示。
     from minicode.auto_mode import AutoModeChecker
     is_injection, injection_reason = AutoModeChecker.detect_prompt_injection(input_text)
     if is_injection:
@@ -378,7 +401,7 @@ def _handle_input(
             "content": f"[SECURITY WARNING] Potential prompt injection pattern detected: {injection_reason}. Proceed with caution and verify all outputs."
         })
     
-    # Update app state
+    # Step 12: 全局 Store 同步 busy 状态，方便 renderer、状态栏或测试读取当前运行状态。
     if state.app_state:
         from minicode.state import set_busy
         state.app_state.set_state(set_busy())
@@ -389,7 +412,7 @@ def _handle_input(
     aggregated_edit_by_key: dict[str, AggregatedEditProgress] = {}
     aggregated_edit_by_entry_id: dict[int, AggregatedEditProgress] = {}
 
-    # Refresh system prompt
+    # Step 13: 每次提交都刷新 system prompt，把最新工具、权限、MCP 状态和相关记忆塞回模型上下文。
     args.messages[0] = {
         "role": "system",
         "content": build_system_prompt(
@@ -402,12 +425,14 @@ def _handle_input(
             },
         ),
     }
+    # Step 14: 用户自然语言作为 user message 追加，模型下一步会基于这条消息决定是否调用工具。
     args.messages.append({"role": "user", "content": input_text})
 
     active_stream_entry_id = None
 
     def on_assistant_stream_chunk(content: str) -> None:
         nonlocal active_stream_entry_id
+        # Step 15: 流式输出第一次到来时创建 assistant 记录，后续 chunk 只追加到同一条记录。
         if active_stream_entry_id is None:
             active_stream_entry_id = _push_transcript_entry(state, kind="assistant", body=content)
         else:
@@ -417,9 +442,8 @@ def _handle_input(
 
     def on_assistant_message(content: str) -> None:
         nonlocal active_stream_entry_id
-        # Hook: assistant output
+        # Step 16: 完整 assistant 输出会触发 hook，并做一次输出安全分类。
         fire_hook_sync(HookEvent.ASSISTANT_OUTPUT, assistant_output=content[:500])
-        # Output safety check (output layer)
         from minicode.auto_mode import AutoModeChecker
         is_unsafe, unsafe_reason = AutoModeChecker.classify_output_safety(content)
         if is_unsafe:
@@ -434,6 +458,7 @@ def _handle_input(
 
     def on_progress_message(content: str) -> None:
         nonlocal active_stream_entry_id
+        # Step 17: progress 是“还没结束，只是在报告进度”，所以写成 progress 记录而不是 final answer。
         if active_stream_entry_id is not None:
             _update_transcript_entry(state, active_stream_entry_id, kind="progress", body=content)
             active_stream_entry_id = None
@@ -443,6 +468,7 @@ def _handle_input(
         rerender()
 
     def on_tool_start(tool_name: str, tool_input: Any) -> None:
+        # Step 18: 工具开始时先更新状态栏，再创建/聚合工具记录，用户能看到 Agent 正在操作哪个工具。
         state.status = f"Running {tool_name}..."
         state.active_tool = tool_name
         state.tool_start_time = time.monotonic()  # 记录工具启动时间
@@ -451,6 +477,7 @@ def _handle_input(
         can_aggregate = _is_file_edit_tool(tool_name) and target_path is not None
 
         if can_aggregate:
+            # Step 19: 同一文件的多次编辑聚合成一条记录，避免 transcript 被重复 edit 卡片刷屏。
             key = f"{tool_name}:{target_path}"
             existing = aggregated_edit_by_key.get(key)
             if existing:
@@ -483,6 +510,7 @@ def _handle_input(
                 aggregated_edit_by_key[key] = progress
                 aggregated_edit_by_entry_id[entry_id] = progress
         else:
+            # Step 20: 非编辑工具通常各自有独立意义，因此保留独立工具记录。
             entry_id = _push_transcript_entry(
                 state,
                 kind="tool",
@@ -496,7 +524,7 @@ def _handle_input(
         rerender()
 
     def on_tool_result(tool_name: str, output: str, is_error: bool) -> None:
-        # Track tool execution time
+        # Step 21: 工具返回后补充耗时；慢工具会在结果前显示耗时，帮助定位卡顿。
         elapsed_note = ""
         if state.tool_start_time is not None:
             elapsed_secs = time.monotonic() - state.tool_start_time
@@ -511,6 +539,7 @@ def _handle_input(
         if entry_id is not None:
             aggregated = aggregated_edit_by_entry_id.get(entry_id)
             if aggregated and aggregated.tool_name == tool_name:
+                # Step 22: 聚合编辑结果只更新同一张卡片的计数和最后一次输出。
                 aggregated.completed += 1
                 if is_error:
                     aggregated.errors += 1
@@ -546,7 +575,7 @@ def _handle_input(
                     "status": "error" if is_error else "success",
                 })
                 
-                # 错误恢复引导
+                # Step 23: 常见错误在 UI 层补一句恢复建议，让用户知道下一步可以查文件/权限/语法。
                 display_output = elapsed_note + output
                 if is_error:
                     suggestions = []
@@ -578,6 +607,7 @@ def _handle_input(
 
         state.active_tool = None
         remaining = sum(len(v) for v in pending_tool_entries.values())
+        # Step 24: 多工具并行时，只要还有工具没回来，状态栏就继续显示剩余数量。
         if remaining > 0:
             state.status = f"{remaining} tool(s) still running..."
         else:
@@ -591,6 +621,7 @@ def _handle_input(
 
     def on_thinking_chunk(content: str) -> None:
         nonlocal active_thinking_entry_id
+        # Step 25: thinking/progress 单独展示，不与最终回答混在一起，方便读者区分“过程”和“结论”。
         if active_thinking_entry_id is None:
             active_thinking_entry_id = _push_transcript_entry(
                 state, kind="progress", body=f"∴ Thinking…\n{content}"
@@ -600,7 +631,7 @@ def _handle_input(
         state.transcript_scroll_offset = 0
         rerender()
 
-    # Run agent turn in background thread to keep UI responsive
+    # Step 26: Agent 主循环放到后台线程，前台输入/渲染线程才能继续刷新界面。
     agent_error = None
     agent_result: dict = {"messages": None}
     agent_thread_lock = threading.Lock()
@@ -608,6 +639,7 @@ def _handle_input(
     def _run_agent_background():
         nonlocal agent_error, agent_result
         try:
+            # Step 27: 传入 messages 的拷贝，避免后台线程运行时被 UI 线程同时修改。
             next_messages = run_agent_turn(
                 model=args.model,
                 tools=args.tools,
@@ -625,13 +657,16 @@ def _handle_input(
                 runtime=args.runtime,
             )
             if args.context_manager is not None:
+                # Step 28: 回合结束后保存压缩后的上下文状态，下次恢复会话能接着用。
                 args.context_manager.messages = next_messages
                 save_context_state(args.context_manager)
             with agent_thread_lock:
                 agent_result["messages"] = next_messages
         except Exception as e:
+            # Step 29: 后台异常先记录到 agent_error，主界面稍后统一展示，避免线程静默死亡。
             agent_error = e
         finally:
+            # Step 30: 无论成功失败，都结束权限回合并恢复 UI 空闲状态。
             args.permissions.end_turn()
             with agent_thread_lock:
                 agent_result["done"] = True
@@ -643,12 +678,11 @@ def _handle_input(
     agent_thread = threading.Thread(target=_run_agent_background, daemon=True)
     agent_thread.start()
     state.agent_thread = agent_thread
-    # Assign lock BEFORE result — the main loop checks agent_result first,
-    # so the lock must already be available to avoid AttributeError.
+    # Step 31: 主循环会先看 agent_result，所以必须先挂锁，避免读结果时锁还不存在。
     state.agent_lock = agent_thread_lock
     state.agent_result = agent_result
     
-    # Return immediately - agent runs in background
+    # Step 32: 这里立刻返回；Agent 继续在后台跑，TUI 主循环继续负责刷新屏幕。
     return False
 
 

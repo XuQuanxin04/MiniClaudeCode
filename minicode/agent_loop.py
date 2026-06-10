@@ -52,7 +52,7 @@ from minicode.smart_router import SmartRouter, TaskOutcome
 from minicode.agent_reflection import ReflectionEngine
 from minicode.model_switcher import ModelSwitcher
 
-# 上下文管理集成 (Claude Code-style + Engineering Cybernetics)
+# 上下文管理集成 (explainable compaction + Engineering Cybernetics)
 from minicode.context_compactor import (
     ContextCompactor,
     AutoCompactConfig,
@@ -63,7 +63,7 @@ from minicode.memory import MemoryManager
 
 logger = get_logger("agent_loop")
 
-# 甯搁噺锛氶伩鍏嶉噸澶嶇殑鎻愮ず鏂囨湰
+# 常量：这些 nudge 文本相当于“流程接回提示”，用于模型卡住、空输出或工具后续动作不明确时。
 NUDGE_CONTINUE = (
     "Continue immediately from your <progress> update with concrete tool calls, "
     "code changes, or an explicit <final> answer only if the task is complete. "
@@ -231,14 +231,15 @@ def _execute_single_tool(
     tool_input = call["input"]
     
     try:
-        # Pre-tool hooks and UI (only for serial execution)
+        # Step A1: 串行执行时立即通知 UI；并发执行会延后通知，避免多线程同时改界面。
         if on_tool_start:
             on_tool_start(tool_name, tool_input)
         
         if store:
+            # Step A2: Store 进入 busy 状态，状态栏/测试可以知道当前正在运行哪个工具。
             store.set_state(set_busy(tool_name))
         
-        # Execute the tool with timeout protection
+        # Step A3: 工具真正执行前加超时保护，防止单个命令把整个 Agent 回合卡死。
         import concurrent.futures
         import os
         _base_timeout = int(os.environ.get("MINICODE_TOOL_TIMEOUT", "120"))
@@ -249,6 +250,7 @@ def _execute_single_tool(
         )
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                # Step A4: 即使是单工具，也放进 worker 线程，这样 future.result 可以施加 timeout。
                 future = pool.submit(
                     tools.execute,
                     tool_name, tool_input,
@@ -256,17 +258,19 @@ def _execute_single_tool(
                 )
                 result = future.result(timeout=TOOL_TIMEOUT)
         except concurrent.futures.TimeoutError:
+            # Step A5: 超时被转换成 ToolResult，模型下一轮能看到错误并改策略。
             result = ToolResult(
                 ok=False,
                 output=f"Tool '{tool_name}' timed out after {TOOL_TIMEOUT}s",
             )
         except Exception:
+            # Step A6: 如果线程池路径本身出问题，退回直接执行，尽量给工具一次完成机会。
             result = tools.execute(
                 tool_name, tool_input,
                 ToolContext(cwd=cwd, permissions=permissions, _runtime=runtime),
             )  # Fallback: direct execution
         
-        # Post-tool state updates (only for serial execution)
+        # Step A7: 工具结束后写入调用计数并恢复 idle，保证 UI 不会停留在 busy。
         if store:
             store.set_state(increment_tool_calls())
             store.set_state(set_idle())
@@ -277,20 +281,17 @@ def _execute_single_tool(
         return result
     
     except (KeyboardInterrupt, SystemExit):
-        # Always propagate these
+        # Step A8: Ctrl-C 和进程退出必须向外抛，不能被包装成普通工具失败。
         raise
     except Exception as exc:  # noqa: BLE001
-        # Global safety net: catch ANY unexpected error in the tool execution
-        # pipeline (hooks, state updates, permission checks, etc.) and convert
-        # it to an error result. This prevents a single tool crash from
-        # cascading into a full session failure.
+        # Step A9: 兜底层捕获 hook、状态更新、权限检查里的意外异常，防止单个工具拖垮整轮会话。
         import traceback
         tb_excerpt = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-3:]).strip()
         error_type = type(exc).__name__
         
         logger.error("Tool execution pipeline crashed (%s): %s", error_type, exc)
         
-        # Ensure state is reset even on crash
+        # Step A10: 即使执行管线崩了，也尽量把 Store 恢复 idle，避免 UI 状态锁死。
         if store:
             try:
                 store.set_state(set_idle())
@@ -522,7 +523,9 @@ def run_agent_turn(
     project_context: str = "",
     enable_work_chain: bool = True,
 ) -> list[ChatMessage]:
+    # Step 1: 本回合只在 current_messages 上工作，避免直接改坏调用方传入的原始列表。
     current_messages = list(messages)
+    # Step 2: 这些计数器是 Agent 的“现场状态”，后续分支会用它们判断继续、重试还是停止。
     saw_tool_result = False
     empty_response_retry_count = 0
     recoverable_thinking_retry_count = 0
@@ -531,7 +534,7 @@ def run_agent_turn(
 
     tool_scheduler = ToolScheduler(metrics_collector=metrics_collector)
 
-    # Initialize work chain if enabled
+    # Step 3: work chain 把用户自然语言拆成任务对象，让控制器能基于任务类型做决策。
     task: TaskObject | None = None
     task_metadata: dict = {}
     layered_context: LayeredContext | None = None
@@ -559,6 +562,7 @@ def run_agent_turn(
     memory_injector: Any = None
 
     if enable_work_chain:
+        # Step 4: 先从对话里抽取任务，再构造分层上下文；后面的路由、压缩、验证都依赖这个任务画像。
         task, task_metadata = _build_work_chain_task(current_messages)
         layered_context, context_builder = _build_layered_context(
             current_messages, system_prompt, project_context, task,
@@ -566,7 +570,7 @@ def run_agent_turn(
         get_pipeline_engine()
         _register_tool_capabilities(tools)
 
-        # 初始化所有工程控制论控制器（通过 Orchestrator 统一管理）
+        # Step 5: Orchestrator 像一个总控台，把反馈、进度、记忆、模型选择等控制器集中初始化。
         orch = CyberneticOrchestrator()
         orch.initialize(model, tools, runtime)
         feedback_controller = orch.feedback
@@ -585,6 +589,7 @@ def run_agent_turn(
         logger.info("CyberneticOrchestrator: %d controllers initialized", 15)
         if smart_router and task:
             try:
+                # Step 6: SmartRouter 先判断当前任务适合哪个模型；如果能切换成功，后续 step 就用新模型。
                 current_model_id = model.model_id if hasattr(model, 'model_id') else ""
                 task_text = task.raw_input if hasattr(task, 'raw_input') else str(current_messages[-1].get('content', ''))
                 routing, switch_result = smart_router.route_and_switch(
@@ -604,9 +609,10 @@ def run_agent_turn(
                         switch_result.old_model, switch_result.new_model,
                     )
             except Exception:
+                # Step 7: 路由失败不影响主流程；最多继续使用原模型。
                 pass
 
-        # 初始化前馈控制器（预判式优化）
+        # Step 8: 前馈控制在执行前预判风险，例如限制最大步数，避免高风险任务无限尝试。
         if task:
             feedforward_controller = FeedforwardController()
             preemptive_config = feedforward_controller.preconfigure(task.parsed_intent, task.raw_input)
@@ -632,7 +638,7 @@ def run_agent_turn(
                     ", ".join(risk_assessment.identified_risks[:3]),
                 )
 
-        # 模型选择控制器：根据任务特征推荐模型
+        # Step 9: 模型选择控制器给出推荐和理由；这里主要记录决策，真正切换由路由/切换器负责。
         if model_selection_ctrl and task:
             try:
                 model_signal = ModelSelectionSignal(
@@ -652,8 +658,7 @@ def run_agent_turn(
             except Exception:
                 pass
 
-        # 初始化上下文管理器 (Claude Code-style + Engineering Cybernetics)
-        # 必须在 SelfHealingEngine 之前初始化，因为自愈引擎需要委托压缩操作
+        # Step 10: 上下文压缩链路必须先准备好，因为后面的自愈模块可能要委托它处理 context overflow。
         context_compactor: ContextCompactor | None = None
         context_cybernetics: ContextCyberneticsOrchestrator | None = None
         memory_mgr: MemoryManager | None = None
@@ -664,17 +669,17 @@ def run_agent_turn(
                 session_memory_enabled=True,
             )
             memory_mgr = MemoryManager(project_root=cwd)
-            # 将 memory_mgr 注入 ReflectionEngine，使自省经验持久化
+            # Step 11: 自省模块写入同一个 MemoryManager，成功/失败经验才能跨会话复用。
             if reflection_engine:
                 reflection_engine.memory = memory_mgr
-            # 初始化 MemoryInjector，将控制论决策落地为实际记忆注入
-            # 同时创建 Reranker（使用真实 LLM 做记忆策展）
+            # Step 12: MemoryInjector 把“是否注入记忆”的控制器决策落到真实 system prompt。
             memory_reranker = None
             try:
                 from minicode.memory_reranker import MemoryReranker
-                # Use the agent's model for reranking (lightweight prompt, ~500 tokens)
+                # Step 13: Reranker 用当前模型轻量重排记忆，减少低相关记忆挤占上下文。
                 memory_reranker = MemoryReranker(model_adapter=model)
             except Exception:
+                # Step 14: 重排失败时仍保留普通检索，记忆系统降级但不中断主任务。
                 pass
             memory_injector = MemoryInjector(
                 memory_manager=memory_mgr,
@@ -687,7 +692,7 @@ def run_agent_turn(
                 orch.wire_memory(memory_mgr)
                 if orch.memory_pipeline is not None:
                     memory_injector = getattr(orch.memory_pipeline, "_injector", memory_injector)
-            # 记忆注入控制器：根据上下文压力决定注入策略
+            # Step 15: 上下文压力越高，记忆注入越要克制，避免“好心塞记忆”导致爆上下文。
             if memory_injection_ctrl:
                 try:
                     inj_signal = MemoryInjectionSignal(
@@ -708,12 +713,13 @@ def run_agent_turn(
                     )
                 except Exception:
                     pass
-            # 执行实际记忆注入：将相关记忆注入到系统 prompt 中
+            # Step 16: 真正注入记忆时，只追加到 system prompt；这样模型会把记忆当作背景约束。
             if orch and task:
                 try:
                     task_desc = task.raw_input if hasattr(task, 'raw_input') else ""
                     current_messages = orch.inject_memories(task_desc, current_messages)
                 except Exception:
+                    # Step 17: 记忆注入失败不能阻塞任务，最多少一点历史背景。
                     pass
             elif memory_injector and task:
                 try:
@@ -725,7 +731,7 @@ def run_agent_turn(
                             len(injected),
                             memory_injector._last_decision.mode.value if memory_injector._last_decision else "?",
                         )
-                        # 将注入的记忆追加到系统 prompt
+                        # Step 18: 只取前几条并截断内容，避免记忆本身把上下文撑爆。
                         memory_context = "\n## Injected Memory\n" + "\n".join(
                             f"- {m.content[:200]}" for m in injected[:5]
                         )
@@ -754,13 +760,14 @@ def run_agent_turn(
                 enabled=True,
             )
             if task and hasattr(task, 'parsed_intent') and task.parsed_intent:
+                # Step 19: 把任务意图告诉上下文控制器，压缩策略可以按任务类型调节。
                 context_cybernetics.set_intent(str(task.parsed_intent.intent_type))
             logger.info("ContextCybernetics initialized: PID control loop + predictive guard")
             if orch:
                 orch.context_compactor = context_compactor
                 orch.context_cybernetics = context_cybernetics
 
-        # 初始化自愈引擎（接收 cybernetics 引用用于 CONTEXT_OVERFLOW 委托）
+        # Step 20: 自愈引擎负责把常见故障转成恢复动作，例如压缩上下文、降低并发、延长超时。
         if orch:
             orch.wire_healing(tool_scheduler, context_compactor)
             self_healing_engine = orch.healing
@@ -772,7 +779,7 @@ def run_agent_turn(
             )
         logger.info("Self-healing engine initialized: automated recovery + compaction delegation")
 
-        # 初始化成本控制闭环 (CostTracker → PID → ToolResultBudgetManager)
+        # Step 21: 成本控制把 token 使用近似成成本压力，再反馈到工具输出预算。
         cost_control = orch.cost_control if orch else None
         if cost_control is None:
             cost_control = CostControlLoop(
@@ -784,14 +791,14 @@ def run_agent_turn(
             orch.cost_control = cost_control
         logger.info("CostControlLoop initialized: BudgetPIDController for cost regulation")
 
-    # 检查上下文状态 + 运行 Claude Code-style 预请求优化管线
+    # Step 22: 在请求模型前先检查上下文；能提前压缩就提前压缩，避免 API 返回 prompt too long。
     if context_manager:
         context_manager.messages = current_messages
         stats = context_manager.get_stats()
         logger.info("Context: %d tokens (%.0f%%), %d messages",
                    stats.total_tokens, stats.usage_percentage, stats.messages_count)
 
-        # 运行控制论闭环优化管线 (Sense → Predict → Control → Act → Learn)
+        # Step 23: 控制论上下文管线先感知 usage，再预测风险，最后决定是否压缩或收紧预算。
         if context_cybernetics:
             if cost_control:
                 est_cost = stats.total_tokens * 0.000015
@@ -815,6 +822,7 @@ def run_agent_turn(
                 turn_id=step,
             )
             if cyber_result and cyber_result.effective:
+                # Step 24: 如果压缩有效，当前消息列表立即替换成压缩后的版本，下一次模型调用就用新上下文。
                 current_messages = cyber_messages
                 context_manager.messages = current_messages
                 logger.info(
@@ -826,6 +834,7 @@ def run_agent_turn(
                     cyber_result.summary_text[:80] if cyber_result.summary_text else "",
                 )
         elif context_compactor:
+            # Step 25: 没有控制论编排器时，仍走普通 compactor 兜底。
             compaction_result = context_compactor.process_request(current_messages)
             if compaction_result.effective:
                 current_messages = compaction_result.messages
@@ -837,6 +846,7 @@ def run_agent_turn(
                     compaction_result.summary_text[:80],
                 )
         elif context_manager.should_auto_compact():
+            # Step 26: 最后兜底是规则压缩，保证上下文接近上限时不会继续硬塞。
             logger.warning("Context near limit, auto-compacting...")
             current_messages = context_manager.compact_messages()
             if on_assistant_message:
@@ -846,10 +856,10 @@ def run_agent_turn(
         while max_steps is None or step < max_steps:
             step += 1
 
-            # Hook: agent turn started
+            # Step 27: 每个 step 是一次“模型决策 -> 可选工具执行 -> 结果回填”的小循环。
             fire_hook_sync(HookEvent.AGENT_START, step=step, cwd=cwd)
 
-            # 高级控制论闭环（每个 step 开始时执行）
+            # Step 28: step 开始时先让控制器观察现场，必要时调整工具调度/上下文/进度策略。
             if enable_work_chain and orch:
                 orch.step_start(
                     context_manager=context_manager,
@@ -941,6 +951,7 @@ def run_agent_turn(
 
             next_step: AgentStep
             try:
+                # Step 29: 模型只看 messages，不直接碰文件；它要么返回文本，要么返回工具调用计划。
                 next_step = _model_next(
                     model,
                     current_messages,
@@ -951,6 +962,7 @@ def run_agent_turn(
             except KeyboardInterrupt:
                 raise  # Let Ctrl-C propagate
             except ConnectionError as error:
+                # Step 30: 网络连接失败通常不是任务逻辑失败，直接写入 assistant 消息并结束本回合。
                 fallback = f"Network error (connection failed or dropped): {error}"
                 logger.error("Model API connection error: %s", error)
                 if on_assistant_message:
@@ -960,6 +972,7 @@ def run_agent_turn(
                     metrics_collector.end_turn(total_tokens=0)
                 return current_messages
             except TimeoutError as error:
+                # Step 31: API 超时也写回 messages，让 transcript 里保留“为什么停下”的原因。
                 fallback = f"Model API timeout: {error}"
                 logger.error("Model API timeout: %s", error)
                 if on_assistant_message:
@@ -969,12 +982,12 @@ def run_agent_turn(
                     metrics_collector.end_turn(total_tokens=0)
                 return current_messages
             except Exception as error:
-                # Catch-all for unexpected errors (rate limit, auth, server 5xx, etc.)
+                # Step 32: 其他异常可能是限流、鉴权、服务端错误或 prompt 太长，先统一转成可展示文本。
                 error_type = type(error).__name__
                 fallback = f"Model API error ({error_type}): {error}"
                 logger.error("Model API error (%s): %s", error_type, error)
 
-                # Reactive Compact: 控制论恢复路径
+                # Step 33: 如果错误像“上下文太长”，先压缩再 continue，相当于把流程接回模型调用前。
                 error_str = str(error).lower()
                 needs_recovery = "prompt" in error_str and ("too long" in error_str or "exceeds" in error_str)
                 if context_cybernetics and needs_recovery:
@@ -989,6 +1002,7 @@ def run_agent_turn(
                         )
                         continue
                 elif context_compactor and needs_recovery:
+                    # Step 34: 没有控制论管线时，普通 compactor 也能做一次反应式恢复。
                     recovery_result = context_compactor.reactive_recover(current_messages, error_str)
                     if recovery_result and recovery_result.effective:
                         current_messages = recovery_result.messages
@@ -1000,7 +1014,7 @@ def run_agent_turn(
                         )
                         continue
 
-                # ModelSwitcher: 尝试切换到备用模型并重试
+                # Step 35: 非限流错误可以尝试切备用模型；切换成功后回到 while 顶部重新问模型。
                 if model_switcher and "rate" not in error_str:
                     try:
                         switch_result = model_switcher.switch_to(
@@ -1025,12 +1039,14 @@ def run_agent_turn(
                 return current_messages
 
             if next_step.type == "assistant":
+                # Step 36: assistant 类型代表模型认为可以直接回复；这里重点处理空回复和“伪最终回答”。
                 is_empty = _is_empty_assistant_response(next_step.content)
                 if not is_empty and _should_treat_assistant_as_progress(
                     kind=getattr(next_step, 'kind', None),
                     content=next_step.content,
                     saw_tool_result=saw_tool_result,
                 ):
+                    # Step 37: 如果模型在工具后只给进度说明，就追加 nudge 要它继续执行下一步。
                     if on_progress_message:
                         on_progress_message(next_step.content)
                     current_messages.append({"role": "assistant_progress", "content": next_step.content})
@@ -1053,6 +1069,7 @@ def run_agent_turn(
                     stop_reason=diagnostics.stopReason if diagnostics else None,
                     ignored_block_types=diagnostics.ignoredBlockTypes if diagnostics else None,
                 ) and recoverable_thinking_retry_count < 3:
+                    # Step 38: 某些模型会因 pause_turn/max_tokens 在 thinking 阶段停住；追加恢复提示后重试。
                     recoverable_thinking_retry_count += 1
                     stop_reason = diagnostics.stopReason if diagnostics else None
                     progress_content = (
@@ -1076,6 +1093,7 @@ def run_agent_turn(
                     continue
 
                 if is_empty and empty_response_retry_count < 2:
+                    # Step 39: 空响应通常是模型犹豫或工具后没接上；给一次明确下一步提示再问。
                     empty_response_retry_count += 1
                     current_messages.append(
                         {
@@ -1090,6 +1108,7 @@ def run_agent_turn(
                     continue
 
                 if is_empty:
+                    # Step 40: 多次空响应后停止，避免无限循环；同时把诊断信息写给用户。
                     diagnostics_suffix = _format_diagnostics(
                         diagnostics.stopReason if diagnostics else None,
                         diagnostics.blockTypes if diagnostics else None,
@@ -1110,8 +1129,9 @@ def run_agent_turn(
 
                 if on_assistant_message:
                     on_assistant_message(next_step.content)
+                # Step 41: 正常最终回答写入 messages，本回合结束。
                 current_messages.append({"role": "assistant", "content": next_step.content})
-                # Protect final answer in working memory
+                # Step 42: 最终回答的前半部分进入 working memory，后续回合可作为关键决策引用。
                 protect_context(
                     content=next_step.content[:500],
                     entry_type="key_decision",
@@ -1120,6 +1140,7 @@ def run_agent_turn(
                 return current_messages
 
             if next_step.content:
+                # Step 43: 非 assistant 类型也可能带文本；progress 文本会继续推动模型，不作为最终答案。
                 role = "assistant_progress" if next_step.contentKind == "progress" else "assistant"
                 if role == "assistant_progress":
                     if on_progress_message:
@@ -1137,15 +1158,15 @@ def run_agent_turn(
                     current_messages.append({"role": role, "content": next_step.content})
 
             if not next_step.calls and next_step.content and next_step.contentKind != "progress":
+                # Step 44: 没有工具调用且不是进度消息，就说明模型已经完成本回合。
                 return current_messages
 
-            # --- Concurrent tool execution ---
-            # Classify calls into concurrent-safe (read-only) vs serial (writes/commands)
+            # Step 45: 模型请求工具后，先把工具分成可并行和必须串行两类。
             calls = next_step.calls
             _results: list[tuple[dict, ToolResult]] = []
 
             if len(calls) <= 1:
-                # Single call — no benefit from concurrency, run directly
+                # Step 46: 单工具没有并发收益，直接执行，UI 回调和 Store 状态会实时更新。
                 call = calls[0]
                 if metrics_collector:
                     metrics_collector.start_tool(call["toolName"])
@@ -1160,12 +1181,12 @@ def run_agent_turn(
                     )
                 _results.append((call, result))
             else:
-                # Multiple calls — use ToolScheduler for intelligent partitioning
+                # Step 47: 多工具调用交给调度器；只读工具可并发，写文件/命令类工具尽量串行。
                 concurrent_calls, serial_calls = tool_scheduler.schedule_calls(calls, tools)
 
                 _results.clear()  # Reuse outer declaration
 
-                # Phase 1: Run all concurrent-safe tools in parallel
+                # Step 48: 第一阶段先跑并发安全工具，例如 read_file、grep_files，缩短等待时间。
                 if concurrent_calls:
                     max_workers = tool_scheduler.get_recommended_max_workers(
                         concurrent_calls,
@@ -1173,7 +1194,7 @@ def run_agent_turn(
                         avg_latency=step * 2.0,
                         recent_failures=tool_error_count,
                     )
-                    # Apply cybernetic concurrency cap if FeedbackController reduced parallelism
+                    # Step 49: 如果反馈控制器发现错误率/抖动高，会临时压低并发上限。
                     force_cap = getattr(tool_scheduler, '_force_max_workers', None)
                     if force_cap:
                         max_workers = min(max_workers, force_cap)
@@ -1192,6 +1213,7 @@ def run_agent_turn(
                         future_to_call = {
                             pool.submit(
                                 _execute_single_tool,
+                                # Step 50: 并发阶段不直接操作 UI/Store，防止多个线程同时改界面状态。
                                 call, tools, cwd, permissions, runtime, None, step,
                                 None, None,  # No UI callbacks during concurrent phase
                             ): call
@@ -1202,10 +1224,11 @@ def run_agent_turn(
                             try:
                                 result = future.result()
                             except Exception as exc:
+                                # Step 51: 单个并发 future 崩溃只转成该工具失败，不拖垮整轮 Agent。
                                 result = ToolResult(ok=False, output=f"Concurrent execution error: {exc}")
                             _results.append((call, result))
 
-                # Phase 2: Run serial tools sequentially (in original order)
+                # Step 52: 第二阶段串行执行会修改环境的工具，保证文件写入/命令执行顺序可预测。
                 if serial_calls:
                     for call in serial_calls:
                         if metrics_collector:
@@ -1220,17 +1243,17 @@ def run_agent_turn(
                                 error=result.output if not result.ok else "",
                             )
                         _results.append((call, result))
-                        # If a serial tool awaits user, return immediately
+                        # Step 53: ask_user 之类工具需要用户输入时，先暂停回合，不继续调用后续工具。
                         if result.awaitUser:
                             # Still need to process remaining results for messages
                             break
-            
-            # Process all results and build messages (preserve original call order)
+
+            # Step 54: 工具可以乱序完成，但写回 messages 时必须按模型原始 call 顺序，方便模型对齐 toolUseId。
             call_order = {call["id"]: idx for idx, call in enumerate(calls)}
             _results.sort(key=lambda pair: call_order.get(pair[0]["id"], 999))
-            
+
             for call, result in _results:
-                # Fire hooks and UI callbacks for concurrent calls (deferred)
+                # Step 55: 并发工具的 UI/hook 之前被延后，这里统一补发，界面看到的生命周期仍完整。
                 tool_def = tools.find(call["toolName"])
                 is_concurrent = tool_def and tool_def.is_concurrency_safe and len(calls) > 1
                 
@@ -1242,7 +1265,7 @@ def run_agent_turn(
                         store.set_state(set_busy(call["toolName"]))
                         store.set_state(increment_tool_calls())
                         store.set_state(set_idle())
-                    # Hook: pre-tool-use (fire after the fact for concurrent tools)
+                    # Step 56: 对并发工具来说 pre hook 是“补记账”，目的是保持审计流完整。
                     fire_hook_sync(
                         HookEvent.PRE_TOOL_USE,
                         tool_name=call["toolName"],
@@ -1250,7 +1273,7 @@ def run_agent_turn(
                         step=step,
                     )
                 
-                # Hook: post-tool-use
+                # Step 57: post hook 记录工具输出和错误状态，外部审计/指标收集都从这里拿结果。
                 fire_hook_sync(
                     HookEvent.POST_TOOL_USE,
                     tool_name=call["toolName"],
@@ -1266,14 +1289,14 @@ def run_agent_turn(
                 saw_tool_result = True
                 if not result.ok:
                     tool_error_count += 1
-                    # Use ErrorClassifier for intelligent error handling
+                    # Step 58: 工具失败后不是简单把错误丢给模型，而是先分类，再生成下一步恢复建议。
                     classified = ErrorClassifier.classify(result.output, tool_name=call["toolName"])
                     nudge = NudgeGenerator.generate(classified, retry_count=tool_error_count)
-                    # Append nudge to tool result content for model context
+                    # Step 59: 恢复建议作为 system note 附在 tool_result 里，模型下一轮能顺着错误继续修。
                     result_output = result.output + "\n\n[System note: " + nudge + "]"
                 else:
                     result_output = result.output
-                    # Increased nudge frequency: provide steering even on success
+                    # Step 60: 当系统稳定性差时，即使工具成功也提醒模型“小步验证”，减少后续失控。
                     if getattr(tool_scheduler, '_force_nudge_frequency', False):
                         success_nudge = (
                             f"Tool '{call['toolName']}' succeeded. "
@@ -1282,7 +1305,7 @@ def run_agent_turn(
                         )
                         result_output = result.output + "\n\n[System note: " + success_nudge + "]"
 
-                # Record conflicts between concurrent tools if both failed
+                # Step 61: 多个并发工具同时失败时，记录冲突关系；调度器以后可以降低它们的并发概率。
                 if not result.ok and len(calls) > 1:
                     for other_call, other_result in _results:
                         if other_call["id"] == call["id"]:
@@ -1290,7 +1313,7 @@ def run_agent_turn(
                         if not other_result.ok:
                             tool_scheduler.record_conflict(call["toolName"], other_call["toolName"])
 
-                # ReadDedup: 去重相同文件的重复读取，节省上下文空间
+                # Step 62: 重复 read_file 会用 stub 替代完整内容，保留“读过”事实但节省上下文。
                 if (
                     context_compactor
                     and result.ok
@@ -1304,6 +1327,7 @@ def run_agent_turn(
                             logger.debug("ReadDedup replaced content for %s (stub)", file_path)
                         dedup_mgr.register_read(file_path, result_output, len(current_messages))
 
+                # Step 63: 先写 assistant_tool_call，再写 tool_result，这对消息历史来说是一组完整因果链。
                 current_messages.append(
                     {
                         "role": "assistant_tool_call",
@@ -1322,6 +1346,7 @@ def run_agent_turn(
                     }
                 )
                 if result.awaitUser:
+                    # Step 64: 需要用户输入时，把工具输出也作为 assistant 消息展示，然后结束本回合等待用户。
                     if on_assistant_message:
                         on_assistant_message(result_output)
                     current_messages.append({"role": "assistant", "content": result_output})
@@ -1329,9 +1354,9 @@ def run_agent_turn(
                         metrics_collector.end_turn(total_tokens=0)
                     return current_messages
 
-            # 工具执行完成后的控制论反馈
+            # Step 65: 工具执行完后，控制器根据错误率、上下文压力、进度变化调整下一 step 策略。
             if enable_work_chain:
-                # 多变量解耦：消除工具间的耦合影响
+                # Step 66: 解耦控制器观察“上下文压力、延迟、错误率”的相互影响，避免误判单一指标。
                 if decoupling_controller:
                     decoupling_controller.record_measurement({
                         "token_usage_to_latency": (
@@ -1346,6 +1371,7 @@ def run_agent_turn(
                     decoupling_controller.compute_decoupling_matrix()
 
                 if orch:
+                    # Step 67: Orchestrator 汇总 step 结果，并可能给出限步、压缩、降并发、切模型等控制信号。
                     step_summary = orch.step_end(
                         tool_scheduler=tool_scheduler,
                         context_manager=context_manager,
@@ -1364,7 +1390,7 @@ def run_agent_turn(
                         feedback_controller=feedback_controller,
                     )
                 else:
-                    # 自愈检测：检测并修复故障
+                    # Step 68: 没有 Orchestrator 时，自愈引擎仍可根据错误率和上下文压力触发恢复动作。
                     if self_healing_engine:
                         metrics_for_healing = {
                             "error_rate": tool_error_count / max(step, 1),
@@ -1375,7 +1401,7 @@ def run_agent_turn(
                         if healing_actions:
                             logger.info("Self-healing triggered: %s", healing_actions[0].strategy)
 
-                    # 进度控制：检测任务是否卡住或完成
+                    # Step 69: 进度控制器判断任务是否卡住；必要时建议停止或请求用户确认。
                     if progress_controller:
                         progress_signal = ProgressSignal(
                             total_steps=max_steps,
@@ -1560,7 +1586,7 @@ def run_agent_turn(
                 coupling_status = decoupling_controller.get_coupling_status()
                 logger.info("Coupling status: strong=%s", coupling_status.get("strong_couplings", []))
 
-        # 上下文管理管线统计 (Claude Code-style + Cybernetics)
+        # 上下文管理管线统计 (explainable compaction + Cybernetics)
         if context_compactor:
             compactor_stats = context_compactor.get_stats()
             logger.info(

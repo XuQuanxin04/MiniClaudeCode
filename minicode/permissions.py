@@ -10,7 +10,7 @@ from typing import Any, Callable, Literal
 from minicode.config import MINI_CODE_PERMISSIONS_PATH
 
 # Auto mode integration
-from minicode.auto_mode import AutoModeChecker, PermissionMode, get_mode_state
+from minicode.auto_mode import AutoModeChecker, PermissionMode, get_mode_state, set_permission_mode
 
 # 权限决策类型 — 对齐 TS 版 PermissionDecision
 PermissionDecision = Literal[
@@ -95,10 +95,12 @@ def _format_command_signature(command: str, args: list[str]) -> str:
 
 
 def _classify_dangerous_command(command: str, args: list[str]) -> str | None:
+    # Step 1: 把命令和参数标准化成 signature，后续提示和 allow/deny 记录都用同一种表示。
     normalized_args = [arg.strip() for arg in args if arg.strip()]
     signature = _format_command_signature(command, normalized_args)
 
     if command == "git":
+        # Step 2: git reset/clean/force push 可能破坏工作区或远端历史，需要额外确认。
         if "reset" in normalized_args and "--hard" in normalized_args:
             return f"git reset --hard can discard local changes ({signature})"
         if "clean" in normalized_args:
@@ -113,7 +115,7 @@ def _classify_dangerous_command(command: str, args: list[str]) -> str | None:
     if command == "npm" and "publish" in normalized_args:
         return f"npm publish affects a registry outside this machine ({signature})"
 
-    # 灾难性删除命令检测
+    # Step 3: 删除、格式化、权限全开、任意代码执行都属于高风险命令。
     if command == "rm":
         # 组合所有标志（支持 -rf, -fr, -Rf, -r -f 等）
         combined_flags = "".join(arg for arg in normalized_args if arg.startswith("-")).lower()
@@ -160,12 +162,13 @@ def _read_permission_store() -> dict[str, Any]:
     if not MINI_CODE_PERMISSIONS_PATH.exists():
         return {}
     try:
+        # Step 1: 权限持久化文件保存“永久允许/永久拒绝”的目录、命令和编辑目标。
         data = json.loads(MINI_CODE_PERMISSIONS_PATH.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return {}
         return data
     except (json.JSONDecodeError, OSError) as e:
-        # 损坏的文件 — 返回空存储并记录警告
+        # Step 2: 文件损坏时降级为空权限存储，不因为配置坏掉导致 Agent 无法启动。
         import warnings
         warnings.warn(f"Corrupted permissions file, resetting: {e}")
         return {}
@@ -177,7 +180,7 @@ def _write_permission_store(store: dict[str, Any]) -> None:
     
     MINI_CODE_PERMISSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
     
-    # 写入临时文件
+    # Step 1: 先写临时文件，再原子替换，避免写到一半崩溃留下半截 JSON。
     fd, tmp_path = tempfile.mkstemp(
         dir=MINI_CODE_PERMISSIONS_PATH.parent,
         suffix=".tmp"
@@ -186,7 +189,7 @@ def _write_permission_store(store: dict[str, Any]) -> None:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(store, f, indent=2)
             f.write('\n')
-        # 原子替换
+        # Step 2: os.replace 是原子操作，读者要么看到旧文件，要么看到完整新文件。
         os.replace(tmp_path, MINI_CODE_PERMISSIONS_PATH)
     except Exception:
         # 清理临时文件
@@ -199,6 +202,7 @@ def _write_permission_store(store: dict[str, Any]) -> None:
 
 class PermissionManager:
     def __init__(self, workspace_root: str, prompt: PromptHandler | None = None, auto_mode: PermissionMode | None = None) -> None:
+        # Step 1: workspace_root 是默认信任边界，项目内路径通常不需要额外确认。
         self.workspace_root = _normalize_path(workspace_root)
         self.prompt = prompt
         self.auto_checker = AutoModeChecker(mode=auto_mode or PermissionMode.DEFAULT)
@@ -216,7 +220,22 @@ class PermissionManager:
         self.session_denied_edits: set[str] = set()
         self.turn_allowed_edits: set[str] = set()
         self.turn_allow_all_edits = False
+        # Step 2: 初始化时加载持久化 allow/deny 规则，让用户之前的选择继续生效。
         self._initialize()
+
+    def set_mode(self, mode: PermissionMode | str) -> str:
+        """Switch the active permission mode for this running session."""
+        message = set_permission_mode(mode)
+        self.auto_checker.set_mode(get_mode_state().mode)
+        return message
+
+    def get_mode(self) -> PermissionMode:
+        """Return the active permission mode for this manager."""
+        return self.auto_checker.mode
+
+    def format_mode_status(self) -> str:
+        """Return a human-readable mode status report."""
+        return get_mode_state().format_status()
 
     def _initialize(self) -> None:
         store = _read_permission_store()
@@ -228,6 +247,7 @@ class PermissionManager:
         self.denied_edit_patterns |= {_normalize_path(item) for item in store.get("deniedEditPatterns", [])}
 
     def begin_turn(self) -> None:
+        # Step 3: 每个 Agent 回合开始时清空“本轮允许编辑”，避免上轮授权泄漏到下一轮。
         self.turn_allowed_edits.clear()
         self.turn_allow_all_edits = False
 
@@ -236,6 +256,7 @@ class PermissionManager:
 
     def get_summary(self) -> list[str]:
         summary = [f"cwd: {self.workspace_root}"]
+        summary.append(f"permission mode: {self.auto_checker.mode.value}")
         summary.append(
             "extra allowed dirs: "
             + (", ".join(sorted(self.allowed_directory_prefixes)[:4]) if self.allowed_directory_prefixes else "none")
@@ -261,18 +282,18 @@ class PermissionManager:
         )
 
     def ensure_path_access(self, target_path: str, intent: str) -> None:
+        # Step 1: 所有路径先规范化，避免 ../、符号链接或大小写差异绕过判断。
         normalized_target = _normalize_path(target_path)
         
-        # Fast path: check workspace root first (most common case)
-        # workspace_root is already normalized, so no need for Path.resolve() again
+        # Step 2: 项目目录内是最常见路径，快速放行，减少每次工具调用的交互成本。
         if _is_within_directory(self.workspace_root, normalized_target):
             return
         
-        # Check denial sets first (fail fast)
+        # Step 3: 明确拒绝优先于允许，用户说过“不准访问”的目录必须立即失败。
         if normalized_target in self.session_denied_paths or _matches_directory_prefix(normalized_target, self.denied_directory_prefixes):
             raise RuntimeError(f"Access denied for path outside cwd: {normalized_target}")
         
-        # Check approval sets
+        # Step 4: 会话内或持久化允许的目录直接放行，不重复打扰用户。
         if normalized_target in self.session_allowed_paths or _matches_directory_prefix(normalized_target, self.allowed_directory_prefixes):
             return
         if normalized_target in self.session_denied_paths or _matches_directory_prefix(normalized_target, self.denied_directory_prefixes):
@@ -280,7 +301,7 @@ class PermissionManager:
         if normalized_target in self.session_allowed_paths or _matches_directory_prefix(normalized_target, self.allowed_directory_prefixes):
             return
         
-        # Auto mode risk assessment for path access
+        # Step 5: auto mode 可以自动审批低风险访问；风险高或不确定再走 prompt。
         assessment = self.auto_checker.assess_risk("path_access", {"path": normalized_target, "intent": intent})
         if assessment.action == "approve":
             get_mode_state().record_decision("approve")
@@ -288,10 +309,12 @@ class PermissionManager:
             return
         
         if self.prompt is None:
+            # Step 6: 非 TTY 场景无法弹交互确认，所以越界访问直接失败并提示用户切 TTY。
             raise RuntimeError(
                 f"Path {normalized_target} is outside cwd {self.workspace_root}. Start minicode in TTY mode to approve it."
             )
 
+        # Step 7: prompt 给用户四种选择：本次允许、目录永久允许、本次拒绝、目录永久拒绝。
         scope_directory = normalized_target if intent in {"list", "command_cwd"} else str(Path(normalized_target).parent)
         result = self.prompt(
             {
@@ -313,9 +336,11 @@ class PermissionManager:
         )
         decision = result.get("decision")
         if decision == "allow_once":
+            # Step 8: allow_once 只放进 session 集合，不写磁盘。
             self.session_allowed_paths.add(normalized_target)
             return
         if decision == "allow_always":
+            # Step 9: allow_always 写入持久化目录前缀，下次启动也会生效。
             self.allowed_directory_prefixes.add(scope_directory)
             self._persist()
             return
@@ -333,10 +358,12 @@ class PermissionManager:
         command_cwd: str,
         force_prompt_reason: str | None = None,
     ) -> None:
+        # Step 1: 命令工作目录本身也要先过路径权限检查。
         self.ensure_path_access(command_cwd, "command_cwd")
+        # Step 2: force_prompt_reason 来自外部风险判断；没有时再用内置危险命令分类器。
         reason = force_prompt_reason or _classify_dangerous_command(command, args)
         if not reason:
-            # Not classified as dangerous — check auto mode for auto-approve
+            # Step 3: 非危险命令可被 auto mode 自动批准或阻断；普通开发命令通常直接放行。
             assessment = self.auto_checker.assess_risk("run_command", {"command": [command] + args})
             if assessment.action == "approve":
                 get_mode_state().record_decision("approve")
@@ -347,12 +374,13 @@ class PermissionManager:
             # action == "prompt" — fall through to normal approval flow
             return
         signature = _format_command_signature(command, args)
+        # Step 4: 危险命令先查本次/永久 deny，再查本次/永久 allow。
         if signature in self.session_denied_commands or signature in self.denied_command_patterns:
             raise RuntimeError(f"Command denied: {signature}")
         if signature in self.session_allowed_commands or signature in self.allowed_command_patterns:
             return
         
-        # Auto mode risk assessment for dangerous commands
+        # Step 5: 即使危险命令，也允许 auto mode 在特定模式下自动批准或直接阻断。
         assessment = self.auto_checker.assess_risk("run_command", {"command": [command] + args})
         if assessment.action == "approve":
             get_mode_state().record_decision("approve")
@@ -363,8 +391,9 @@ class PermissionManager:
             raise RuntimeError(f"Command blocked by auto mode: {assessment.reason}")
         
         if self.prompt is None:
+            # Step 6: 没有交互 prompt 时不能偷偷运行危险命令。
             raise RuntimeError(f"Command requires approval: {signature}. Start minicode in TTY mode to approve it.")
-        # Distinguish forced prompts (external trigger) from dangerous commands
+        # Step 7: 区分“内置危险命令”和“外部强制确认”，提示文案更准确。
         summary = (
             "mini-code wants to run a dangerous command"
             if not force_prompt_reason
@@ -386,9 +415,11 @@ class PermissionManager:
         )
         decision = result.get("decision")
         if decision == "allow_once":
+            # Step 8: 一次允许只对当前进程有效，适合临时验证命令。
             self.session_allowed_commands.add(signature)
             return
         if decision == "allow_always":
+            # Step 9: 永久允许写入配置，适合用户信任的固定命令。
             self.allowed_command_patterns.add(signature)
             self._persist()
             return
@@ -400,6 +431,7 @@ class PermissionManager:
         raise RuntimeError(f"Command denied: {signature}")
 
     def ensure_edit(self, target_path: str, diff_preview: str) -> None:
+        # Step 1: 编辑权限按具体文件判断，因为写文件会直接改变用户工作区。
         normalized_target = _normalize_path(target_path)
         if (
             normalized_target in self.session_denied_edits
@@ -412,9 +444,10 @@ class PermissionManager:
             or self.turn_allow_all_edits
             or normalized_target in self.allowed_edit_patterns
         ):
+            # Step 2: 允许来源包括本次会话、本回合、全回合编辑授权和永久信任文件。
             return
         
-        # Auto mode risk assessment for file edits
+        # Step 3: auto mode 可以批准低风险编辑，也可以直接阻断明显危险的编辑。
         assessment = self.auto_checker.assess_risk("edit_file", {"path": normalized_target})
         if assessment.action == "approve":
             get_mode_state().record_decision("approve")
@@ -425,7 +458,9 @@ class PermissionManager:
             raise RuntimeError(f"Edit blocked by auto mode: {assessment.reason}")
         
         if self.prompt is None:
+            # Step 4: 无交互环境不能静默修改文件，必须失败并提示用户用 TTY 审核。
             raise RuntimeError(f"Edit requires approval: {normalized_target}. Start minicode in TTY mode to review it.")
+        # Step 5: 编辑确认展示 diff_preview，让用户看见“将要改什么”再决定。
         result = self.prompt(
             {
                 "kind": "edit",
@@ -445,19 +480,24 @@ class PermissionManager:
         )
         decision = result.get("decision")
         if decision == "allow_once":
+            # Step 6: apply once 只把这个文件放进 session 允许集。
             self.session_allowed_edits.add(normalized_target)
             return
         if decision == "allow_turn":
+            # Step 7: allow_turn 允许本回合继续编辑同一文件，适合多次 patch。
             self.turn_allowed_edits.add(normalized_target)
             return
         if decision == "allow_all_turn":
+            # Step 8: allow_all_turn 允许本回合所有编辑，回合结束时 begin_turn 会清空。
             self.turn_allow_all_edits = True
             return
         if decision == "allow_always":
+            # Step 9: always allow 只信任这个目标文件，不是全项目无条件放行。
             self.allowed_edit_patterns.add(normalized_target)
             self._persist()
             return
         if decision == "deny_with_feedback":
+            # Step 10: 用户拒绝并给反馈时，把反馈作为错误返回给模型，模型下一轮可以改方案。
             guidance = str(result.get("feedback", "")).strip()
             if guidance:
                 raise RuntimeError(f"Edit denied: {normalized_target}\nUser guidance: {guidance}")

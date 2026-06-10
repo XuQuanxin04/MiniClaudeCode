@@ -1,7 +1,7 @@
 """Hooks event system for MiniCode Python.
 
-Inspired by Claude Code's hooks system (PreToolUse, PostToolUse, Stop, etc.)
-and plugin event listeners.
+Follows common coding-agent lifecycle hook patterns such as PreToolUse,
+PostToolUse, Stop, and plugin-style event listeners.
 
 Provides lifecycle hooks for:
 - Tool execution (pre/post)
@@ -121,8 +121,6 @@ class HookRegistration:
 
 class HookManager:
     """Manages hook registrations and executions.
-    
-    Inspired by Claude Code's hooks system and plugin event listeners.
     """
     
     def __init__(self):

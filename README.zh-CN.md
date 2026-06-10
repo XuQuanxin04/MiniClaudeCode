@@ -1,164 +1,105 @@
 # MiniCode Python
 
-<p align="center">
-  <strong>一个具备自我调节能力的 Python 本地编码 Agent。</strong>
-</p>
+一个本地 Python Coding Agent：它可以阅读代码、搜索文件、生成方案、修改文件、运行开发命令、管理上下文压力，并把自己的工作流程解释给使用者看。
 
-<p align="center">
-  <a href="./README.md">English</a>
-  ·
-  <a href="https://github.com/LiuMengxuan04/MiniCode">MiniCode 主仓库</a>
-  ·
-  <a href="https://github.com/QUSETIONS/MiniCode-Python">Python 仓库</a>
-</p>
+[English](./README.md) | [学习文档](./学习文档.md) | [项目介绍](./项目介绍.md)
 
-<p align="center">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-738%20passed-brightgreen?style=flat-square">
-  <img alt="Package" src="https://img.shields.io/badge/package-minicode--py-555?style=flat-square">
-</p>
+## 这个 fork 新增了什么
 
-MiniCode Python 是 MiniCode 家族中的 Python 实现。主项目是
-[LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode)；本仓库负责探索
-Python-first 的 Agent 运行时，包括控制论编排、自适应记忆、本地工具循环和可验证实验。
+这个仓库是在 MiniCode Python 基础上的学习型 fork。它保留“本地 Coding Agent”的核心结构，并增加了几项更适合学习和安全使用的能力：
 
-它不是把 LLM 简单包成一个命令行工具，而是把上下文压力、工具失败、记忆噪音和成本漂移都当作可观测信号，再反馈到运行时决策里。
+- 计划模式：输入 `/plan` 后，Agent 只能读文件、搜索代码、分析项目、输出方案，不能直接改文件或运行非只读命令。
+- 执行模式：用户认可方案后，输入 `/execute`，Agent 才回到普通执行模式。
+- checkpoint 回滚：由 MiniCode 工具管理的文件修改会在写入前保存快照，存到 `.mini-code-checkpoints/`，可以用 `/checkpoint rollback <id>` 恢复。
+- 可解释三层上下文压缩：上下文管理不再只是“悄悄删历史”，而是解释 L1/L2/L3 分别保留什么。
+- DeepSeek 适配：通过 OpenAI-compatible adapter 支持 DeepSeek 直连 API，配置 `DEEPSEEK_API_KEY` 和模型名即可使用。
+- 教学文档：[学习文档.md](./学习文档.md) 用“我们如何一步步搭一个本地 Coding Agent”的方式讲源码；[项目介绍.md](./项目介绍.md) 讲模块设计、工程流程和测试/harness 思路。
 
-## 为什么做这个版本
+## 借鉴了哪些公开开源项目
 
-很多 Coding Agent 本质上是“模型包装器”：输入 prompt，调用工具，然后希望循环不要坏掉。MiniCode Python 走的是另一条路线：
-
-> 编码 Agent 应该在工作时观察自己，并动态调整上下文、记忆、验证、并发和恢复行为。
-
-因此这个仓库适合用来：
-
-- 阅读一个完整可运行的本地 Coding Agent；
-- 研究 Agent 控制、记忆和验证闭环；
-- 作为 TypeScript MiniCode 主仓库的 Python 伴随实现；
-- 在进入大型平台之前，先验证运行时控制想法。
-
-## 核心亮点
-
-| 方向 | MiniCode Python 提供什么 |
-| --- | --- |
-| 运行时控制 | `CyberneticOrchestrator` 统一协调上下文、成本、反馈、进度、记忆和恢复控制器。 |
-| 上下文管理 | PID 风格的上下文压力处理、压缩、预算调整和预测保护。 |
-| 记忆系统 | 领域感知检索、可选 LLM rerank、prompt 注入、任务反思写回和后台维护。 |
-| 工具循环 | 本地文件、搜索、编辑、命令工具，支持调度器感知执行和错误提示。 |
-| 故障恢复 | 面向上下文溢出、工具失败、振荡和资源压力的自愈路径。 |
-| 验证体系 | 覆盖根包的单元测试、集成测试、压力测试和控制论测试。 |
-
-## 架构
-
-```mermaid
-flowchart LR
-    User["用户任务"] --> Loop["agent_loop.py"]
-    Loop --> Tools["本地工具<br/>文件、搜索、编辑、Shell"]
-    Tools --> Loop
-
-    Loop --> Sensors["传感器<br/>上下文、成本、错误、进度"]
-    Sensors --> Orchestrator["CyberneticOrchestrator"]
-    Orchestrator --> Control["控制器<br/>PID、Kalman、预测、<br/>记忆、模型、进度"]
-    Control --> Actions["运行时动作<br/>压缩、限制并发、<br/>调整预算、注入记忆、<br/>恢复、反思"]
-    Actions --> Loop
-```
-
-主循环现在直接驱动 orchestrator 生命周期：
-
-- `wire_memory()`
-- `wire_healing()`
-- `inject_memories()`
-- `step_start()`
-- `step_end()`
-- `reflect_on_task()`
-
-这让控制器初始化、记忆注入、逐步观测、反馈、自愈和任务后反思都绑定在同一个运行时表面上。
-
-## 仓库状态
-
-当前有效包是 `pyproject.toml` 配置的根目录包。
-
-| 路径 | 作用 |
-| --- | --- |
-| `minicode/` | 安装和测试使用的 canonical Python 包。 |
-| `tests/` | 当前有效测试套件。 |
-| `py-src/minicode/` | 兼容/迁移用镜像目录，会同步关键行为修复。 |
-| `docs/OPTIMIZATION_SUMMARY.md` | 完整优化和集成记录。 |
-| `docs/memory_theory.md` | 记忆和控制理论说明。 |
-
-TypeScript 主仓库可以把本仓库作为 `external/MiniCode-Python` 关联进来，但 Python 包本身从本仓库根目录安装和验证。
+- [Cline](https://github.com/cline/cline)：借鉴 Plan/Act 工作流、人工审核文件修改、checkpoint 可回退、多模型适配这些产品设计。
+- [Roo Code](https://github.com/RooCodeInc/Roo-Code)：借鉴“不同模式对应不同工作方式”的设计，比如 Code、Architect、Ask、Debug。
+- [Aider](https://github.com/Aider-AI/aider)：借鉴“AI 修改要能被 Git diff、管理、撤销”的工程思路。
+- [OpenHands](https://github.com/OpenHands/OpenHands)：借鉴把 Agent 做成可组合运行时的思路，CLI、SDK、GUI 都围绕同一个 agentic runtime。
+- [DeepSeek API Docs](https://api-docs.deepseek.com/)：DeepSeek 官方提供 OpenAI-compatible API，本项目采用这条路径接入，并优先使用当前 V4 模型。
 
 ## 快速开始
 
 ```bash
-git clone https://github.com/QUSETIONS/MiniCode-Python.git
-cd MiniCode-Python
 python -m pip install -e .[dev]
-```
-
-运行 CLI：
-
-```bash
-minicode-py
-```
-
-或者直接运行模块：
-
-```bash
 python -m minicode.main
+```
+
+DeepSeek 配置示例：
+
+```powershell
+$env:DEEPSEEK_API_KEY = "sk-..."
+$env:MINI_CODE_MODEL = "deepseek-v4-flash"
+python -m minicode.main
+```
+
+也可以写入 `~/.mini-code/settings.json`：
+
+```json
+{
+  "model": "deepseek-v4-flash",
+  "env": {
+    "DEEPSEEK_API_KEY": "sk-..."
+  }
+}
+```
+
+## 常用命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `/plan` | 进入只读计划模式。 |
+| `/execute` | 回到默认执行模式。 |
+| `/mode` | 查看当前权限模式和统计。 |
+| `/mode plan` | 显式切换到 plan 模式。 |
+| `/checkpoint list` | 查看已有 checkpoint。 |
+| `/checkpoint show <id>` | 查看某个 checkpoint 保存了哪些路径。 |
+| `/checkpoint rollback <id>` | 回滚到某次 MiniCode 工具修改前的文件状态。 |
+| `/context` | 查看上下文状态，包含 L1/L2/L3 三层解释。 |
+| `/model deepseek` | 查看 DeepSeek 直连 API 模型。推荐 `deepseek-v4-flash` / `deepseek-v4-pro`；`deepseek-chat`、`deepseek-reasoner` 仅作为兼容旧配置保留。 |
+
+## 运行流程
+
+```mermaid
+flowchart TD
+    User["用户任务"] --> Entry["main.py / TUI / headless"]
+    Entry --> Config["config.py\n读取模型和 MCP 配置"]
+    Entry --> Permissions["permissions.py + auto_mode.py\n权限模式和风险判断"]
+    Entry --> Tools["ToolRegistry + tools/\n文件、搜索、命令、MCP 工具"]
+    Entry --> Model["model_registry.py\n选择模型适配器"]
+    Model --> OpenAI["OpenAI-compatible adapter\nOpenAI / OpenRouter / DeepSeek / Custom"]
+    Model --> Anthropic["Anthropic adapter"]
+    Entry --> Prompt["prompt.py\n拼装系统提示词"]
+    Prompt --> Loop["agent_loop.py\n模型-工具循环"]
+    Permissions --> Tools
+    Tools --> Loop
+    Loop --> Context["context_manager.py / context_compactor.py\n上下文观察与压缩"]
+    Loop --> Memory["memory.py\n项目记忆"]
+    Tools --> Checkpoint[".mini-code-checkpoints\n修改前快照"]
 ```
 
 ## 验证
 
-当前根包使用以下命令验证：
+本次改动的核心模块已经通过语法编译：
 
 ```bash
-python -m compileall -q minicode py-src\minicode tests
-pytest -q
+python -m py_compile minicode/auto_mode.py minicode/permissions.py minicode/cli_commands.py minicode/checkpoints.py minicode/model_registry.py minicode/config.py
 ```
 
-最近一次本地结果：
+如果本机安装了 dev 依赖，可以运行关键测试：
 
-```text
-738 passed, 2 skipped, 3 warnings
+```bash
+python -m pip install -e .[dev]
+python -m pytest tests/test_permissions.py tests/test_cli_commands.py tests/test_checkpoints.py tests/test_context_compactor.py tests/test_config.py -q
 ```
 
-这些 warning 来自 benchmark 测试中未注册的 `pytest.mark.benchmark` 标记，不代表行为失败。
+## 项目来源
 
-## 核心模块
-
-| 模块 | 作用 |
-| --- | --- |
-| `minicode/agent_loop.py` | 主模型/工具循环和运行时控制集成。 |
-| `minicode/cybernetic_orchestrator.py` | 控制器生命周期 facade。 |
-| `minicode/context_cybernetics.py` | 上下文感知、PID 控制和压缩循环。 |
-| `minicode/feedback_controller.py` | 外环系统状态到控制信号的映射。 |
-| `minicode/self_healing_engine.py` | 故障检测和恢复委托。 |
-| `minicode/memory_pipeline.py` | 统一的记忆读取、注入、写回和维护接口。 |
-| `minicode/memory_reranker.py` | LLM 驱动的记忆策展。 |
-| `minicode/domain_classifier.py` | 任务和文件领域推断。 |
-| `minicode/model_registry.py` | 模型选择控制器。 |
-| `minicode/progress_controller.py` | 任务健康度和卡顿检测。 |
-
-## MiniCode 家族
-
-| 版本 | 仓库 | 重点 |
-| --- | --- | --- |
-| TypeScript | [LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode) | 主线终端 Agent、TUI、MCP、Skills、会话和上下文控制。 |
-| Python | [QUSETIONS/MiniCode-Python](https://github.com/QUSETIONS/MiniCode-Python) | 控制论 Python 运行时、记忆管线和面向验证的实验。 |
-| Rust | [harkerhand/MiniCode-rs](https://github.com/harkerhand/MiniCode-rs/tree/master) | Rust 实现和系统侧实验。 |
-| Java | [hobbescalvin414-tech/minicode4j](https://github.com/hobbescalvin414-tech/minicode4j/tree/feat/default-ts-ui) | Java 实现，沿用 TypeScript 风格 UI 方向。 |
-
-## 文档
-
-- [完整优化总结](./docs/OPTIMIZATION_SUMMARY.md)
-- [记忆理论说明](./docs/memory_theory.md)
-- [MiniCode 主仓库](https://github.com/LiuMengxuan04/MiniCode)
-
-## 设计原则
-
-- 让 Agent 主循环保持可读、可查、可改。
-- 优先使用可观测运行时信号，而不是隐藏 prompt 技巧。
-- 运行时动作必须有边界：压缩、限流、调预算、恢复、反思。
-- 把验证和证据当作 Agent 运行时的一部分。
-- 让 Python 实现既能作为软件使用，也能作为研究脚手架。
+- MiniCode 主项目：[LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode)
+- MiniCode Python 基础项目：[QUSETIONS/MiniCode-Python](https://github.com/QUSETIONS/MiniCode-Python)
+- 当前仓库：用于学习源码、补充中文文档、谨慎实验本地 Coding Agent 能力。

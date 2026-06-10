@@ -1,4 +1,5 @@
 from minicode.config import merge_settings, validate_provider_runtime
+from minicode.model_registry import Provider, build_provider_config, detect_provider
 
 
 def test_merge_settings_merges_env_and_mcp_servers() -> None:
@@ -44,6 +45,30 @@ def test_validate_provider_runtime_accepts_openrouter_prefixed_model() -> None:
             "model": "anthropic/claude-sonnet-4",
             "openrouterApiKey": "sk-or-test",
             "openrouterBaseUrl": "https://openrouter.ai/api",
+        }
+    )
+
+    assert errors == []
+
+
+def test_deepseek_provider_uses_openai_compatible_config(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+
+    provider = detect_provider("deepseek-v4-flash", {})
+    config = build_provider_config("deepseek-v4-flash", {})
+
+    assert provider == Provider.DEEPSEEK
+    assert config.is_openai_compatible is True
+    assert config.base_url == "https://api.deepseek.com"
+    assert config.api_key == "sk-deepseek-test"
+
+
+def test_validate_provider_runtime_accepts_deepseek() -> None:
+    errors = validate_provider_runtime(
+        {
+            "model": "deepseek-v4-flash",
+            "deepseekApiKey": "sk-deepseek-test",
+            "deepseekBaseUrl": "https://api.deepseek.com",
         }
     )
 

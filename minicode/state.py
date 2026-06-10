@@ -23,7 +23,6 @@ class Store(Generic[T]):
     """Zustand-style state management.
     
     Provides predictable state updates with subscriber notifications.
-    Inspired by Claude Code's Zustand store implementation.
     """
     
     def __init__(
@@ -109,8 +108,6 @@ class Store(Generic[T]):
 @dataclass
 class AppState:
     """Global application state.
-    
-    Inspired by Claude Code's AppState type.
     """
     # Session info
     session_id: str = ""

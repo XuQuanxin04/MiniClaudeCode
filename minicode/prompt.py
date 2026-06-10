@@ -106,9 +106,10 @@ def build_system_prompt(
     permission_summary = permission_summary or []
     extras = extras or {}
 
+    # Step 1: PromptPipeline 把 system prompt 拆成多个段落，静态段可缓存，动态段每轮更新。
     pipeline = PromptPipeline()
 
-    # --- Static Prefix (Cacheable) ---
+    # Step 2: 静态前缀定义 Agent 身份、工作习惯、工具使用原则和结构化输出协议。
     pipeline.register_static(
         "role",
         "You are mini-code, a terminal coding assistant.\n"
@@ -118,6 +119,7 @@ def build_system_prompt(
         "You can inspect or modify paths outside the current cwd when the user asks, but tool permissions may pause for approval first.\n"
         "When making code changes, keep them minimal, practical, and working-oriented.\n"
         "If the user clearly asked you to build, modify, optimize, or generate something, do the work instead of stopping at a plan.\n"
+        "If the Permission context says `permission mode: plan`, inspect and plan only: do not edit files or run non-read-only commands until the user switches with /execute.\n"
         "If you need user clarification, call the ask_user tool with one concise question and wait for the user reply. Do not ask clarifying questions as plain assistant text.\n"
         "Do not choose subjective preferences such as colors, visual style, copy tone, or naming unless the user explicitly told you to decide yourself.\n"
         "When using read_file, pay attention to the header fields. If it says TRUNCATED: yes, continue reading with a larger offset before concluding that the file itself is cut off.\n"
@@ -141,16 +143,17 @@ def build_system_prompt(
 
     pipeline.register_static(
         "governance",
+        # Step 3: 工程治理规则属于强约束，和角色说明一起作为长期稳定的 system prompt。
         _engineering_governance_rules(),
     )
 
-    # --- Dynamic Suffix (Per-turn) ---
-    # Permission context
+    # Step 4: 以下是动态后缀；权限、技能、MCP、记忆会随着项目和会话变化。
     if permission_summary:
         perm_text = "Permission context:\n" + "\n".join(permission_summary)
+        # Step 5: 权限摘要告诉模型哪些操作可能需要确认，减少模型盲目调用危险工具。
         pipeline.register_dynamic("permissions", lambda: perm_text)
 
-    # Skills section with conditional injection
+    # Step 6: skills 是可发现能力；存在时注入清单，不存在时也给模型一个明确的“无技能”状态。
     skills = extras.get("skills", [])
     if skills:
         def _build_skills():
@@ -172,6 +175,7 @@ def build_system_prompt(
             ])
             return "\n".join(lines)
 
+        # Step 7: 技能列表动态生成，安装/删除 skill 后下一轮 prompt 可以自动反映新状态。
         pipeline.register_dynamic("skills", _build_skills)
     else:
         pipeline.register_dynamic(
@@ -182,7 +186,7 @@ def build_system_prompt(
             ),
         )
 
-    # MCP servers section
+    # Step 8: MCP 区域告诉模型哪些外部服务已连接，以及 MCP 工具的命名规则。
     mcp_servers = extras.get("mcpServers", [])
     if mcp_servers:
         def _build_mcp():
@@ -202,7 +206,7 @@ def build_system_prompt(
                     "Connected MCP tools are already exposed in the tool list with names prefixed like mcp__server__tool. "
                     "Use list_mcp_resources/read_mcp_resource and list_mcp_prompts/get_mcp_prompt when a server exposes those capabilities."
                 )
-            # Sequential thinking server detection
+            # Step 9: 某些 MCP 工具有特殊使用场景，例如 sequential thinking，单独提示更容易被模型调用。
             sequential_servers = [
                 server for server in mcp_servers
                 if "sequential" in server.get("name", "").lower()
@@ -228,6 +232,7 @@ def build_system_prompt(
 
     memory_context = str(extras.get("memory_context") or "").strip()
     if memory_context:
+        # Step 10: 记忆不是普通聊天消息，而是作为“项目背景和历史决策”注入 system prompt。
         pipeline.register_dynamic(
             "memory",
             lambda: (
@@ -239,7 +244,7 @@ def build_system_prompt(
             cache_ttl=30.0,
         )
 
-    # Global CLAUDE.md (file-cached)
+    # Step 11: 全局 CLAUDE.md 保存用户跨项目偏好，读取后加入动态 prompt。
     global_claude_md = _maybe_read(Path.home() / ".claude" / "CLAUDE.md")
     if global_claude_md:
         pipeline.register_dynamic(
@@ -248,7 +253,7 @@ def build_system_prompt(
             cache_ttl=600.0,
         )
 
-    # Project CLAUDE.md (file-cached)
+    # Step 12: 项目 CLAUDE.md 保存当前仓库规则，优先级比普通记忆更像“项目说明书”。
     project_claude_md = _maybe_read(cwd_path / "CLAUDE.md")
     if project_claude_md:
         pipeline.register_dynamic(
@@ -257,4 +262,5 @@ def build_system_prompt(
             cache_ttl=300.0,
         )
 
+    # Step 13: 最后由 pipeline 统一拼接，调用方只拿到一条完整 system prompt。
     return pipeline.build()

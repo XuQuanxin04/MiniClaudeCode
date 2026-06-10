@@ -1,4 +1,4 @@
-"""Comprehensive tests for Claude Code-style Context Management System.
+"""Comprehensive tests for MiniCode context management.
 
 Tests all 7 phases:
 1. Core data structures (CompactBoundary, CompactionResult)
@@ -659,6 +659,9 @@ class TestContextCompactorOrchestrator:
         compactor = ContextCompactor(workspace=tmp_path)
         status = compactor.format_pipeline_status()
         assert "Context Management Pipeline Status" in status
+        assert "L1 Recent Working Context" in status
+        assert "L2 Session Summary" in status
+        assert "L3 Long-Term Memory And Artifacts" in status
         assert "Context window:" in status
 
     def test_subcomponent_accessors(self, tmp_path):

@@ -25,7 +25,7 @@ def _truncate_large_output(output: str, max_chars: int = MAX_OUTPUT_CHARS) -> st
     
     lines = output.split("\n")
     total_lines = len(lines)
-    # Keep head (first 60%) and tail (last 40%)
+    # Step 1: 命令输出过大时保留头尾；头部看启动信息，尾部看最终错误/测试结果。
     head_lines = int(total_lines * 0.6)
     tail_lines = total_lines - head_lines
     if tail_lines > int(total_lines * 0.4):
@@ -98,9 +98,10 @@ def split_command_line(command_line: str) -> list[str]:
     """
     if os.name == "nt":
         try:
+            # Step 1: Windows 路径里反斜杠很多，posix=False 更不容易把路径拆坏。
             return shlex.split(command_line, posix=False)
         except ValueError:
-            # If even non-posix fails, fall back to simple whitespace split
+            # Step 2: 兜底按空格拆，至少能给权限层和执行层一个可处理的 command/args。
             return command_line.split()
     return shlex.split(command_line, posix=True)
 
@@ -149,6 +150,7 @@ def _classify_shell_snippet_risk(command: str) -> str | None:
 
 
 def _normalize_command_input(input_data: dict) -> tuple[str, list[str]]:
+    # Step 1: 支持两种输入：完整 command 字符串，或 command + args 显式数组。
     command = str(input_data.get("command", "")).strip()
     raw_args = input_data.get("args") or []
     if raw_args:
@@ -192,6 +194,7 @@ def _build_execution_command(
     background_shell: bool,
 ) -> tuple[str, list[str]]:
     if use_shell:
+        # Step 1: 出现管道/重定向等 shell 语法时，必须通过系统 shell 执行。
         shell_command = _strip_trailing_background_operator(raw_command) if background_shell else raw_command
         if os.name == "nt":
             return "cmd", ["/d", "/s", "/c", shell_command]
@@ -200,6 +203,7 @@ def _build_execution_command(
         shell = os.environ.get("SHELL", "/bin/sh")
         return shell, ["-lc", shell_command]
     if _is_windows_shell_builtin(normalized_command):
+        # Step 2: Windows 内建命令不是独立 exe，需要 cmd /c 包一层。
         quoted_args = subprocess.list2cmdline(list(normalized_args))
         shell_command = normalized_command if not quoted_args else f"{normalized_command} {quoted_args}"
         return "cmd", ["/d", "/s", "/c", shell_command]
@@ -207,6 +211,7 @@ def _build_execution_command(
 
 
 def _validate(input_data: dict) -> dict:
+    # Step 1: run_command 的参数校验只做类型和 timeout 范围约束，风险判断留给 _run/permissions。
     command = input_data.get("command")
     if not isinstance(command, str):
         raise ValueError("command is required")
@@ -227,12 +232,14 @@ def _validate(input_data: dict) -> dict:
 
 
 def _run(input_data: dict, context) -> ToolResult:
+    # Step 1: cwd 先解析成受权限保护的真实路径；未指定则使用当前 workspace。
     effective_cwd = str(resolve_tool_path(context, input_data["cwd"], "list")) if input_data.get("cwd") else context.cwd
     normalized_command, normalized_args = _normalize_command_input(input_data)
     if not normalized_command:
         return ToolResult(ok=False, output="Command not allowed: empty command")
 
     raw_args = input_data.get("args") or []
+    # Step 2: 判断是否需要 shell、是否后台执行、是否属于内置允许命令。
     use_shell = _looks_like_shell_snippet(input_data["command"], raw_args)
     background_shell = _is_background_shell_snippet(input_data["command"], raw_args)
     known_command = _is_allowed_command(normalized_command)
@@ -245,6 +252,7 @@ def _run(input_data: dict, context) -> ToolResult:
         background_shell=background_shell,
     )
     shell_prompt_reason = _classify_shell_snippet_risk(input_data["command"]) if use_shell else None
+    # Step 3: 未知命令或高风险 shell 片段会强制走权限确认。
     force_prompt_reason = (
         shell_prompt_reason
         if shell_prompt_reason
@@ -252,13 +260,14 @@ def _run(input_data: dict, context) -> ToolResult:
     )
 
     if context.permissions is not None:
+        # Step 4: 真正执行前先过权限门；读命令可直接放行，写/危险命令可能要求用户确认。
         if force_prompt_reason:
             context.permissions.ensure_command(command, args, effective_cwd, force_prompt_reason=force_prompt_reason)
         elif use_shell or not _is_read_only_command(normalized_command):
             context.permissions.ensure_command(command, args, effective_cwd)
 
     if use_shell and background_shell:
-        # Platform-specific process isolation flags
+        # Step 5: 后台命令启动后立即返回 task id，不等待进程输出，适合 dev server 等长任务。
         popen_kwargs: dict = {}
         if os.name == "nt":
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -296,6 +305,7 @@ def _run(input_data: dict, context) -> ToolResult:
 
     if sys.platform != "win32":
         try:
+            # Step 6: Unix 下优先用 PTY，让很多交互式/彩色命令输出更接近真实终端。
             import pty
             import select
             
@@ -318,6 +328,7 @@ def _run(input_data: dict, context) -> ToolResult:
             
             try:
                 while True:
+                    # Step 7: select 等待输出，超时则杀掉子进程并返回部分输出。
                     r, _, _ = select.select([master_fd], [], [], effective_timeout)
                     if not r:
                         timed_out = True
@@ -353,6 +364,7 @@ def _run(input_data: dict, context) -> ToolResult:
             pass  # Fallback to subprocess on systems without pty
 
     try:
+        # Step 8: Windows 或没有 PTY 的系统走标准 subprocess.run 路径。
         effective_timeout = input_data.get("timeout") or COMMAND_TIMEOUT
         completed = subprocess.run(  # noqa: S603
             [command, *args],
@@ -367,9 +379,10 @@ def _run(input_data: dict, context) -> ToolResult:
         )
         output = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part).strip()
         output = _truncate_large_output(output)
+        # Step 9: returncode==0 视为成功；stderr 内容仍会拼入 output 供模型判断。
         return ToolResult(ok=completed.returncode == 0, output=output)
     except subprocess.TimeoutExpired as e:
-        # Capture partial output from timeout
+        # Step 10: 超时时保留 stdout/stderr 的部分输出，模型下一轮可据此调整命令。
         partial_stdout = (e.stdout or "").strip() if e.stdout else ""
         partial_stderr = (e.stderr or "").strip() if e.stderr else ""
         partial = "\n".join(part for part in [partial_stdout, partial_stderr] if part)

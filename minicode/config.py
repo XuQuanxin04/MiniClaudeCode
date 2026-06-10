@@ -42,6 +42,10 @@ KNOWN_MODELS = [
     "meta-llama/llama-4-maverick",
     "deepseek/deepseek-r1",
     "deepseek/deepseek-chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "deepseek-chat",
+    "deepseek-reasoner",
     "qwen/qwen3-235b-a22b",
     "minimax/minimax-m1",
 ]
@@ -166,6 +170,14 @@ def load_runtime_config(cwd: str | Path | None = None) -> dict[str, Any]:
     )
     openrouter_api_key = str(env.get("OPENROUTER_API_KEY", "")).strip()
 
+    # DeepSeek direct API (OpenAI-compatible)
+    deepseek_base_url = (
+        str(env.get("DEEPSEEK_BASE_URL", "")).strip()
+        or effective.get("deepseekBaseUrl", "")
+        or "https://api.deepseek.com"
+    )
+    deepseek_api_key = str(env.get("DEEPSEEK_API_KEY", "")).strip() or effective.get("deepseekApiKey", "")
+
     # Custom endpoint
     custom_base_url = (
         str(env.get("CUSTOM_API_BASE_URL", "")).strip()
@@ -193,14 +205,14 @@ def load_runtime_config(cwd: str | Path | None = None) -> dict[str, Any]:
 
     # Validate: at least one auth method must be available
     has_auth = any([
-        auth_token, api_key, openai_api_key, openrouter_api_key, custom_api_key,
+        auth_token, api_key, openai_api_key, openrouter_api_key, deepseek_api_key, custom_api_key,
     ])
     if not model:
         raise RuntimeError("No model configured. Set ~/.mini-code/settings.json or ANTHROPIC_MODEL.")
     if not has_auth:
         raise RuntimeError(
             "No auth configured. Set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, "
-            "OPENROUTER_API_KEY, or CUSTOM_API_KEY."
+            "OPENROUTER_API_KEY, DEEPSEEK_API_KEY, or CUSTOM_API_KEY."
         )
 
     # --- User profile paths ---
@@ -227,6 +239,8 @@ def load_runtime_config(cwd: str | Path | None = None) -> dict[str, Any]:
         "openaiApiKey": openai_api_key,
         "openrouterBaseUrl": openrouter_base_url,
         "openrouterApiKey": openrouter_api_key,
+        "deepseekBaseUrl": deepseek_base_url,
+        "deepseekApiKey": deepseek_api_key,
         "customBaseUrl": custom_base_url,
         "customApiKey": custom_api_key,
         "maxOutputTokens": max_output_tokens,
@@ -278,6 +292,13 @@ def validate_provider_runtime(runtime: dict[str, Any]) -> list[str]:
             )
         if not _is_valid_http_url(runtime.get("openrouterBaseUrl")):
             errors.append("OpenRouter base URL must be an http(s) URL.")
+    elif provider == Provider.DEEPSEEK:
+        if not runtime.get("deepseekApiKey"):
+            errors.append(
+                "Provider is deepseek for this model, but DEEPSEEK_API_KEY/deepseekApiKey is not configured."
+            )
+        if not _is_valid_http_url(runtime.get("deepseekBaseUrl")):
+            errors.append("DeepSeek base URL must be an http(s) URL.")
     elif provider == Provider.CUSTOM:
         if not runtime.get("customBaseUrl"):
             errors.append("Provider is custom, but CUSTOM_API_BASE_URL/customBaseUrl is not configured.")
@@ -372,8 +393,9 @@ def validate_config(cwd: str | Path | None = None) -> tuple[bool, list[str]]:
                 "  1. Anthropic:  export ANTHROPIC_API_KEY=sk-ant-...\n"
                 "  2. OpenAI:     export OPENAI_API_KEY=sk-...\n"
                 "  3. OpenRouter: export OPENROUTER_API_KEY=sk-or-...\n"
-                "  4. Custom:     export CUSTOM_API_KEY=... + CUSTOM_API_BASE_URL=...\n"
-                "  5. Or edit ~/.mini-code/settings.json:\n"
+                "  4. DeepSeek:   export DEEPSEEK_API_KEY=sk-...\n"
+                "  5. Custom:     export CUSTOM_API_KEY=... + CUSTOM_API_BASE_URL=...\n"
+                "  6. Or edit ~/.mini-code/settings.json:\n"
                 '     {"env": {"ANTHROPIC_API_KEY": "sk-ant-..."}}\n'
             )
             errors.append(help_msg)
@@ -420,10 +442,12 @@ def format_config_diagnostic(cwd: str | Path | None = None) -> str:
         lines.append(f"  Provider: {provider.value}")
 
         lines.append(f"  Base URL: {config.get('baseUrl', 'not set')}")
-        if config.get('openaiBaseUrl') and provider in (Provider.OPENAI, Provider.OPENROUTER, Provider.CUSTOM):
+        if config.get('openaiBaseUrl') and provider in (Provider.OPENAI, Provider.OPENROUTER, Provider.DEEPSEEK, Provider.CUSTOM):
             lines.append(f"  OpenAI Base URL: {config.get('openaiBaseUrl')}")
         if config.get('openrouterApiKey'):
             lines.append("  OpenRouter: configured")
+        if config.get('deepseekApiKey'):
+            lines.append(f"  DeepSeek Base URL: {config.get('deepseekBaseUrl')}")
         if config.get('customBaseUrl'):
             lines.append(f"  Custom Base URL: {config.get('customBaseUrl')}")
 
@@ -436,6 +460,8 @@ def format_config_diagnostic(cwd: str | Path | None = None) -> str:
             auth_methods.append("OPENAI_API_KEY")
         if config.get("openrouterApiKey"):
             auth_methods.append("OPENROUTER_API_KEY")
+        if config.get("deepseekApiKey"):
+            auth_methods.append("DEEPSEEK_API_KEY")
         if config.get("customApiKey"):
             auth_methods.append("CUSTOM_API_KEY")
         lines.append(f"  Auth: {', '.join(auth_methods) or 'none'}")

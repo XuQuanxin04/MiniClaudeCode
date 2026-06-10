@@ -11,7 +11,7 @@ Provides rich rendering of markdown content in the terminal:
 - Horizontal rules
 - Links with underline
 
-Inspired by Claude Code's markdown rendering quality.
+Designed for readable terminal coding-agent responses.
 """
 from __future__ import annotations
 

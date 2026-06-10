@@ -1,7 +1,7 @@
 """Cost and usage tracking for API calls.
 
 Tracks token usage, API costs, and code changes across the session.
-Inspired by Claude Code's cost-tracker.ts implementation.
+Follows common terminal coding-agent usage tracking patterns.
 """
 
 from __future__ import annotations
@@ -136,6 +136,30 @@ MODEL_PRICING = {
         "cache_read": 0.07,
         "cache_write": 0.14,
     },
+    "deepseek-v4-flash": {
+        "input": 0.14,
+        "output": 0.28,
+        "cache_read": 0.07,
+        "cache_write": 0.14,
+    },
+    "deepseek-v4-pro": {
+        "input": 0.435,
+        "output": 0.87,
+        "cache_read": 0.22,
+        "cache_write": 0.435,
+    },
+    "deepseek-chat": {
+        "input": 0.14,
+        "output": 0.28,
+        "cache_read": 0.07,
+        "cache_write": 0.14,
+    },
+    "deepseek-reasoner": {
+        "input": 0.14,
+        "output": 0.28,
+        "cache_read": 0.07,
+        "cache_write": 0.14,
+    },
     "qwen/qwen3-235b-a22b": {
         "input": 0.22,
         "output": 0.88,
@@ -182,12 +206,13 @@ def calculate_cost(
         Cost in USD
     """
     pricing = MODEL_PRICING.get(model, MODEL_PRICING["default"])
-    return (
-        (input_tokens / _DECIMAL_1M) * pricing["input"]
-        + (output_tokens / _DECIMAL_1M) * pricing["output"]
-        + (cache_read_tokens / _DECIMAL_1M) * pricing["cache_read"]
-        + (cache_creation_tokens / _DECIMAL_1M) * pricing["cache_write"]
+    cost = (
+        (Decimal(input_tokens) / _DECIMAL_1M) * Decimal(str(pricing["input"]))
+        + (Decimal(output_tokens) / _DECIMAL_1M) * Decimal(str(pricing["output"]))
+        + (Decimal(cache_read_tokens) / _DECIMAL_1M) * Decimal(str(pricing["cache_read"]))
+        + (Decimal(cache_creation_tokens) / _DECIMAL_1M) * Decimal(str(pricing["cache_write"]))
     )
+    return float(cost)
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +252,6 @@ class ModelUsage:
 @dataclass
 class CostTracker:
     """Tracks API costs and usage across the session.
-    
-    Inspired by Claude Code's cost-tracker.ts
     """
     # Global totals
     total_cost_usd: float = 0.0

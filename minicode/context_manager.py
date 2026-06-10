@@ -43,6 +43,10 @@ DEFAULT_CONTEXT_WINDOWS = {
     "meta-llama/llama-4-maverick": 1_000_000,
     "deepseek/deepseek-r1": 128_000,
     "deepseek/deepseek-chat": 128_000,
+    "deepseek-v4-flash": 1_000_000,
+    "deepseek-v4-pro": 1_000_000,
+    "deepseek-chat": 1_000_000,
+    "deepseek-reasoner": 1_000_000,
     "qwen/qwen3-235b-a22b": 128_000,
     "minimax/minimax-m1": 1_000_000,
     "default": 128_000,  # Fallback
@@ -87,21 +91,21 @@ def estimate_tokens(text: str) -> int:
     if not text:
         return 0
     
-    # 缓存查找（短文本优先缓存）
+    # Step 1: token 估算会被高频调用，先查缓存可以避免同一段文本反复计算。
     cache_key = text if len(text) < 256 else hash(text)  # 长文本用 hash 作为 key
     cached = _token_cache.get(cache_key)
     if cached is not None:
         return cached
     
-    # 使用正则表达式快速统计 CJK 字符数量
+    # Step 2: 中文/日文/韩文和英文代码 token 密度不同，所以先统计 CJK 字符数量。
     cjk_count = len(_CJK_PATTERN.findall(text))
     
-    # CJK 字符约 1.5 字符/token，英文约 4 字符/token
+    # Step 3: 用启发式比例合并估算，目标不是精确计费，而是判断上下文压力是否危险。
     ascii_chars = len(text) - cjk_count
     
     result = max(1, int(cjk_count / 1.5 + ascii_chars / 4.0))
     
-    # 缓存结果（防止无限增长）
+    # Step 4: 缓存有上限，避免长时间会话把内存越占越大。
     if len(_token_cache) < _TOKEN_CACHE_MAX:
         _token_cache[cache_key] = result
     
@@ -432,8 +436,8 @@ class ContextManager:
     
     def add_message(self, message: dict[str, Any]) -> None:
         """Add a message and update tracking."""
+        # Step 1: 新消息进入 ContextManager 后立即缓存 token 数，后续 get_stats 就不用重复估算。
         self.messages.append(message)
-        # Cache token count immediately to avoid re-estimation in get_stats()
         self._token_cache[id(message)] = estimate_message_tokens(message)
     
     def get_stats(self) -> ContextStats:
@@ -453,6 +457,7 @@ class ContextManager:
         tool_calls = 0
         
         for msg in self.messages:
+            # Step 2: 统计时按消息 id 查缓存；缓存缺失再现场估算。
             msg_tokens = self._token_cache.get(id(msg))
             if msg_tokens is None:
                 msg_tokens = estimate_message_tokens(msg)
@@ -466,6 +471,7 @@ class ContextManager:
                 tool_calls += 1
         
         total_tokens = system_tokens + conversation_tokens
+        # Step 3: usage_pct 是压缩触发的核心指标，后续 near_limit/should_compact 都由它派生。
         usage_pct = (total_tokens / self.context_window * 100) if self.context_window > 0 else 0
         
         is_near_limit = usage_pct >= 80  # Warning at 80%
@@ -493,7 +499,7 @@ class ContextManager:
         - Level 3: Trigger at 60% threshold (more aggressive)
         """
         stats = self.get_stats()
-        # Higher compaction level = more aggressive (lower threshold)
+        # Step 1: 压缩次数越多，阈值越低；说明会话已经偏长，需要更早介入。
         threshold = AUTOCOMPACT_THRESHOLD - (self._compaction_level * 0.10)
         threshold = max(0.60, threshold)  # Minimum 60%
         usage_pct = stats.usage_percentage
@@ -524,17 +530,18 @@ class ContextManager:
         """
         stats = self.get_stats()
         if not stats.should_compact:
+            # Step 1: 未到压缩阈值时原样返回，不为了“整洁”牺牲上下文完整性。
             return self.messages
         
-        # Get target based on compaction level
+        # Step 2: 本次压缩要压到哪个目标比例，由当前压缩等级决定。
         target_pct = self._COMPACTION_LEVELS[min(self._compaction_level, 2)]
         target_tokens = int(self.context_window * target_pct)
         
-        # Always keep system prompt
+        # Step 3: system prompt 是模型行为边界，永远保留；只压缩普通对话和工具历史。
         system_messages = [m for m in self.messages if m.get("role") == "system"]
         other_messages = [m for m in self.messages if m.get("role") != "system"]
         
-        # Phase 1: Remove progress messages (lowest priority — always safe to drop)
+        # Step 4: 第一阶段删 progress；它只是过程播报，对恢复任务目标价值最低。
         filtered = [
             m for m in other_messages
             if m.get("role") != "assistant_progress"
@@ -542,15 +549,12 @@ class ContextManager:
         
         current_tokens = estimate_messages_tokens(filtered)
         if current_tokens <= target_tokens:
+            # Step 5: 如果删 progress 已经够了，就立刻收手，尽量少动历史。
             return self._finalize_compaction(
                 system_messages, other_messages, filtered, stats, target_tokens
             )
         
-        # Phase 2: Truncate large tool results in-place (adaptive threshold)
-        # Use different thresholds based on tool type:
-        # - Read-only tools: more aggressive truncation (they can be re-run)
-        # - Edit tools: less aggressive (their results are side-effect confirmations)
-        # - Error results: preserve more (errors are hard to reproduce)
+        # Step 6: 第二阶段截断大工具输出；按工具类型给不同预算，因为可重跑性和诊断价值不同。
         _READ_TOOL_TRUNCATE = 1500   # chars to keep for read-only tool results
         _EDIT_TOOL_TRUNCATE = 3000   # chars to keep for edit tool results
         _ERROR_TRUNCATE = 4000       # chars to keep for error results
@@ -566,7 +570,7 @@ class ContextManager:
             tool_name = m.get("toolName", "")
             is_error = m.get("isError", False)
             
-            # Select truncation threshold based on tool type
+            # Step 7: 错误结果最值得保留，读文件结果最容易重跑，所以阈值不同。
             if is_error:
                 threshold = _ERROR_TRUNCATE
             elif tool_name in _EDIT_TOOLS:
@@ -579,9 +583,8 @@ class ContextManager:
             if len(content) <= threshold:
                 continue
             
-            # Smart truncation: head + tail with context line
+            # Step 8: 截断保留头尾，中间用提示标记省略，模型能知道信息不完整。
             content_lines = content.split("\n")
-            # Determine how many head/tail lines to keep based on threshold
             keep_chars = threshold
             head_lines: list[str] = []
             tail_lines: list[str] = []
@@ -611,15 +614,12 @@ class ContextManager:
         
         current_tokens = estimate_messages_tokens(filtered)
         if current_tokens <= target_tokens:
+            # Step 9: 截断工具输出后如果达标，就不再压缩工具调用语义。
             return self._finalize_compaction(
                 system_messages, other_messages, filtered, stats, target_tokens
             )
         
-        # Phase 3: Compress tool_call + result pairs into inline summaries
-        # Instead of simply deleting pairs, replace them with compact summaries
-        # that preserve the semantic link between call and result.
-        # This is especially important for edit operations where knowing
-        # WHAT was edited is critical even after compaction.
+        # Step 10: 第三阶段把 tool_call + tool_result 合成一句摘要，保留“做了什么 -> 结果如何”的因果链。
         compressed: list[dict[str, Any]] = []
         i = 0
         while i < len(filtered):
@@ -636,10 +636,10 @@ class ContextManager:
                 result_msg.get("content", "")
                 is_error = result_msg.get("isError", False)
                 
-                # Build a compact summary preserving the key information
+                # Step 11: 工具对摘要内容不同，例如编辑保留路径，搜索保留关键词和命中数。
                 summary = self._compress_tool_pair(call_msg, result_msg)
                 
-                # Replace the pair with a single compressed message
+                # Step 12: 用 assistant 摘要替代两条工具消息，让模型仍能读到历史动作。
                 compressed.append({
                     "role": "assistant",
                     "content": summary,
@@ -651,15 +651,12 @@ class ContextManager:
         
         current_tokens = estimate_messages_tokens(compressed)
         if current_tokens <= target_tokens:
+            # Step 13: 工具对压缩后达标就结束，避免删掉用户意图或最终结论。
             return self._finalize_compaction(
                 system_messages, other_messages, compressed, stats, target_tokens
             )
         
-        # Phase 4: Priority-based removal (oldest first, lowest priority removed first)
-        # Priority order (highest kept, lowest removed first):
-        #   0 = user messages (keep longest — encode intent)
-        #   1 = assistant conclusions (keep long — encode results)
-        #   2 = compressed tool summaries (medium — already compressed)
+        # Step 14: 最后一阶段才按优先级删除旧消息；这说明前几种温和压缩都不够。
         PRIORITY = {
             "user": 0,                    # Highest — encode intent
             "assistant": 1,               # High — encode conclusions + compressed tools
@@ -667,11 +664,11 @@ class ContextManager:
             "tool_result": 3,             # Low — should have been compressed in Phase 3
         }
         
-        # Protect recent messages (last 6) from removal
+        # Step 15: 最近消息保护起来，因为模型下一步最依赖刚发生的工具结果和用户要求。
         PROTECTED_RECENT = 6
         
         while estimate_messages_tokens(compressed) > target_tokens and len(compressed) > MIN_MESSAGES_TO_KEEP:
-            # Find the message with the lowest priority (highest number) in the removable range
+            # Step 16: 只在可删除范围里找最低价值消息，避免删到系统提示或最近现场。
             removable_end = max(MIN_MESSAGES_TO_KEEP, len(compressed) - PROTECTED_RECENT)
             best_idx = None
             best_priority = -1
@@ -708,38 +705,37 @@ class ContextManager:
         result_content = result_msg.get("content", "")
         is_error = result_msg.get("isError", False)
         
-        # Error results: preserve the error message
+        # Step 1: 错误结果保留错误文本，因为错误很难靠重新运行完全复现。
         if is_error:
             error_text = result_content.strip()[:200].replace("\n", " ")
             return f"[Tool {tool_name} ERROR: {error_text}]"
         
-        # Tool-specific compression
+        # Step 2: 编辑工具摘要保留文件路径和修改数量，方便模型知道项目哪些文件被动过。
         if tool_name in _EDIT_TOOLS:
             path = inp.get("path") or inp.get("filePath", "unknown")
-            # Preserve key edit details
             if tool_name == "multi_edit":
                 edits = inp.get("edits", [])
                 return f"[Edited {path}: {len(edits)} changes applied]"
             return f"[Edited {path}: ok]"
         
         if tool_name in _READ_TOOLS:
+            # Step 3: 读文件内容可重读，摘要只需要记录读过哪个文件和大概行数。
             path = inp.get("path") or inp.get("filePath", "")
             if path:
-                # Note: content can be re-read, so just record that it was read
                 line_count = result_content.count("\n") + 1
                 return f"[Read {path}: {line_count} lines]"
             return f"[{tool_name}: completed]"
         
         if tool_name in _SEARCH_TOOLS:
+            # Step 4: 搜索摘要保留关键词和结果数量，让模型知道调查方向。
             pattern = inp.get("pattern") or inp.get("query", "")
-            # Count matches from result
             match_lines = [l for l in result_content.split("\n") if l.strip() and not l.startswith("#")]
             return f"[Searched '{pattern[:50]}': {len(match_lines)} results]"
         
         if tool_name in _COMMAND_TOOLS:
+            # Step 5: 命令摘要保留命令名和 exit 信息，足够判断验证是否通过。
             cmd = inp.get("command", "")
             cmd_name = cmd.split()[0] if cmd.split() else "command"
-            # Check for success indicators
             exit_info = ""
             if "exit code" in result_content.lower():
                 for line in result_content.split("\n"):
@@ -748,7 +744,7 @@ class ContextManager:
                         break
             return f"[Ran {cmd_name}{exit_info}]"
         
-        # Generic compression: tool name + brief result
+        # Step 6: 未分类工具退回通用摘要，至少保留工具名和结果开头。
         brief = result_content.strip()[:100].replace("\n", " ")
         if brief:
             return f"[{tool_name}: {brief}]"
@@ -763,7 +759,7 @@ class ContextManager:
         target_tokens: int,
     ) -> list[dict[str, Any]]:
         """Build the final compacted message list with summary marker."""
-        # Build a layered summary of removed messages
+        # Step 1: 找出被移除的消息，再生成分层摘要，防止历史完全丢失。
         removed_set = set(id(m) for m in filtered)
         removed_messages = [m for m in original_other if id(m) not in removed_set]
         summary_text = _summarize_removed_messages(removed_messages)
@@ -771,7 +767,7 @@ class ContextManager:
         removed_count = len(original_other) - len(filtered)
         after_pct = estimate_messages_tokens(filtered) / self.context_window * 100 if self.context_window > 0 else 0
         
-        # Add compaction marker with content summary
+        # Step 2: 压缩标记作为 system 消息插入，明确告诉模型“之前的部分被摘要化了”。
         compaction_marker = {
             "role": "system",
             "content": (
@@ -782,10 +778,10 @@ class ContextManager:
             ),
         }
         
-        # Build final message list
+        # Step 3: 最终顺序是原 system prompt、压缩标记、压缩后的普通消息。
         compacted = system_messages + [compaction_marker] + filtered
         
-        # Record compaction
+        # Step 4: 保存压缩历史，/context 或日志可以解释“什么时候压缩过、压掉了多少”。
         self.compaction_history.append({
             "timestamp": time.time(),
             "before_tokens": stats.total_tokens,
@@ -794,11 +790,11 @@ class ContextManager:
             "compaction_level": self._compaction_level,
         })
         
-        # Increment compaction level for next compaction (more aggressive)
+        # Step 5: 下次压缩更激进，因为同一会话反复接近上限说明需要更强收缩。
         self._compaction_level = min(self._compaction_level + 1, 3)
         
         self.messages = compacted
-        # Rebuild token cache: discard stale entries, keep only retained msgs
+        # Step 6: 重建缓存，删掉已经不在上下文里的旧消息 token 记录。
         self._token_cache = {
             id(m): self._token_cache.get(id(m), estimate_message_tokens(m))
             for m in compacted

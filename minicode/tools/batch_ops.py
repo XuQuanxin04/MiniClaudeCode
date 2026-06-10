@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 
+from minicode.checkpoints import create_checkpoint_for_paths
 from minicode.tooling import ToolDefinition, ToolContext, ToolResult
 from minicode.workspace import resolve_tool_path
 
@@ -29,6 +30,12 @@ def _run_batch_copy(input_data: dict, context: ToolContext) -> ToolResult:
         return ToolResult(ok=False, output=f"Source not found: {input_data['source']}")
     
     try:
+        create_checkpoint_for_paths(
+            context.cwd,
+            [destination],
+            reason=f"Before batch_copy to {input_data['destination']}",
+            tool_name="batch_copy",
+        )
         if source.is_dir():
             if destination.exists():
                 shutil.rmtree(destination)
@@ -85,6 +92,12 @@ def _run_batch_move(input_data: dict, context: ToolContext) -> ToolResult:
         return ToolResult(ok=False, output=f"Source not found: {input_data['source']}")
     
     try:
+        create_checkpoint_for_paths(
+            context.cwd,
+            [source, destination],
+            reason=f"Before batch_move to {input_data['destination']}",
+            tool_name="batch_move",
+        )
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source), str(destination))
         return ToolResult(ok=True, output=f"Moved to {input_data['destination']}")
@@ -132,6 +145,12 @@ def _run_batch_delete(input_data: dict, context: ToolContext) -> ToolResult:
         return ToolResult(ok=False, output=f"Path not found: {input_data['path']}")
     
     try:
+        create_checkpoint_for_paths(
+            context.cwd,
+            [target],
+            reason=f"Before batch_delete of {input_data['path']}",
+            tool_name="batch_delete",
+        )
         if target.is_dir():
             if recursive:
                 shutil.rmtree(target)
